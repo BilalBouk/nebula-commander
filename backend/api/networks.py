@@ -19,7 +19,7 @@ from ..database import get_session
 from ..models import Network, NetworkDNSConfig, NetworkGroupFirewall, NetworkPermission, NetworkSettings, User
 from ..services.audit import get_client_ip, log_audit
 from ..services.ip_allocator import IPAllocator
-from ..utils.validation import validate_hostname, validate_subnet_cidr
+from ..utils.validation import validate_group, validate_hostname, validate_subnet_cidr
 
 logger = logging.getLogger(__name__)
 
@@ -454,8 +454,13 @@ def _validate_inbound_rule(rule: dict) -> None:
     if not isinstance(rule, dict):
         raise HTTPException(status_code=400, detail="Each rule must be an object")
     allowed_group = rule.get("allowed_group")
-    if not allowed_group or not str(allowed_group).strip():
-        raise HTTPException(status_code=400, detail="Each rule must have non-empty 'allowed_group'")
+    # Enforce the same strict label rules used everywhere a group name enters the system: this
+    # value is written verbatim into the generated Nebula firewall config, so commas, whitespace
+    # or config-significant characters must be rejected here, not just "non-empty".
+    try:
+        validate_group(allowed_group if isinstance(allowed_group, str) else "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid 'allowed_group': {e}")
     proto = (rule.get("protocol") or "any").strip().lower()
     if proto not in VALID_INBOUND_PROTOS:
         raise HTTPException(
@@ -528,9 +533,10 @@ async def update_group_firewall(
     session: AsyncSession = Depends(get_session),
 ):
     """Create or update inbound firewall rules for a group in this network (defined.net style)."""
-    group_name = (group_name or "").strip()
-    if not group_name:
-        raise HTTPException(status_code=400, detail="Group name is required")
+    try:
+        group_name = validate_group(group_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid group name: {e}")
     result = await session.execute(select(Network).where(Network.id == network_id))
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Network not found")

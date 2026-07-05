@@ -88,6 +88,20 @@ class Settings(BaseSettings):
     # cannot spoof its source IP by sending its own X-Forwarded-For. Default 1 (the bundled
     # nginx). Set to 0 if the app is exposed directly with no proxy (then XFF is ignored).
     trusted_proxy_count: int = 1
+
+    # Peer addresses (CIDRs) trusted to supply X-Forwarded-For. XFF is honored ONLY when the
+    # direct TCP peer is inside one of these ranges; a client that reaches the backend directly
+    # (peer not a trusted proxy) cannot spoof its source IP no matter what XFF it sends. Defaults
+    # to loopback + RFC1918/ULA private ranges (the bundled nginx sits on a private Docker
+    # network). Set to [] to never trust XFF. Provide as a JSON list in the env var.
+    trusted_proxies: list[str] = [
+        "127.0.0.0/8",
+        "::1/128",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "fc00::/7",
+    ]
     
     # Redirect security - allowed hosts for OAuth/OIDC redirects
     # Prevents open redirect vulnerabilities by validating redirect URLs

@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -18,12 +18,15 @@ function consumeTokenFromHash(): string | null {
 const AuthCallback: React.FC = () => {
   const { setToken } = useAuth();
   const navigate = useNavigate();
+  // Consume the token once, in a lazy initializer, so it is captured before the effect runs.
+  // consumeTokenFromHash() is destructive (it strips the fragment), and React StrictMode
+  // double-invokes effects in development — reading it inside the effect would return null on
+  // the second run and wrongly redirect an authenticated user to the error page.
+  const [token] = useState(() => consumeTokenFromHash());
 
   useEffect(() => {
     // The backend delivers the token in the URL fragment (#token=), which browsers never send
-    // to the server (no access-log / Referer leak). Read and clear it immediately.
-    const token = consumeTokenFromHash();
-
+    // to the server (no access-log / Referer leak).
     if (token) {
       // Store token and update auth state
       setToken(token);
@@ -34,7 +37,7 @@ const AuthCallback: React.FC = () => {
       // No token, redirect to login with error
       navigate('/login?error=no_token', { replace: true });
     }
-  }, [setToken, navigate]);
+  }, [token, setToken, navigate]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-900">

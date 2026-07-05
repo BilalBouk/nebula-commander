@@ -127,7 +127,7 @@ async def dev_token(
     # This is intentional security logging, not a credential leak. "DEV-TOKEN" is a label, not an actual token.
     logger.warning(
         "DEV-TOKEN accessed from %s - granting admin access without authentication",
-        request.client.host if request.client else "unknown"
+        get_client_ip(request) or "unknown"
     )
     expires = datetime.utcnow() + timedelta(minutes=settings.jwt_expiration_minutes)
     payload = {

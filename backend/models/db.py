@@ -131,6 +131,30 @@ class Certificate(Base):
     node: Mapped["Node"] = relationship("Node", back_populates="certificates")
 
 
+class RevokedCertificate(Base):
+    """A revoked cert fingerprint published in a network's pki.blocklist.
+
+    Kept in a network-scoped table (not derived from the certificates/nodes rows) so a
+    revoked cert stays in the blocklist until its natural expiry even after the node or its
+    Certificate rows are deleted. This is the single source of truth for pki.blocklist.
+    """
+
+    __tablename__ = "revoked_certificates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    network_id: Mapped[int] = mapped_column(
+        ForeignKey("networks.id"), nullable=False, index=True
+    )
+    fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    # When the cert would have expired anyway; entries past this are dropped from the blocklist.
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("network_id", "fingerprint", name="uq_revoked_cert_network_fp"),
+    )
+
+
 class User(Base):
     """OIDC user with permissions."""
 

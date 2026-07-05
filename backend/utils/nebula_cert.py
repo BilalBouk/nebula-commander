@@ -14,6 +14,8 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional
 
+from .validation import validate_group
+
 logger = logging.getLogger(__name__)
 
 
@@ -210,7 +212,12 @@ def cert_sign(
         "-duration", f"{duration_hours}h",
     ]
     if groups:
-        args.extend(["-groups", ",".join(groups)])
+        # Validate each group at the trust boundary (not only at API ingress): these values are
+        # comma-joined into a single nebula-cert -groups argument, so an unvalidated value could
+        # smuggle in extra comma-separated groups or config-breaking characters. Covers rows
+        # written before the Pydantic validators existed and any non-API issuance path.
+        safe_groups = [validate_group(g) for g in groups]
+        args.extend(["-groups", ",".join(safe_groups)])
     if in_pub is not None:
         args.extend(["-in-pub", str(in_pub)])
     run_nebula_cert(args)
@@ -233,9 +240,13 @@ def cert_fingerprint_from_pem(cert_pem: str) -> Optional[str]:
         with tempfile.TemporaryDirectory() as tmpdir:
             crt = Path(tmpdir) / "cert.crt"
             crt.write_text(cert_pem)
-            proc = run_nebula_cert([
-                "print", "-path", str(crt), "-json",
-            ])
+            # Pass the bare filename with cwd=tmpdir rather than the absolute path: on Windows
+            # the absolute temp path contains backslashes, which the subprocess-arg allowlist
+            # (_SAFE_ARG_PATTERN) rejects — that would make every fingerprint None and silently
+            # disable revocation. The relative name is allowlist-safe on every platform.
+            proc = run_nebula_cert(
+                ["print", "-path", "cert.crt", "-json"], cwd=Path(tmpdir)
+            )
             data = json.loads(proc.stdout)
     except Exception as e:  # subprocess failure, bad JSON, etc.
         logger.error("Could not compute cert fingerprint: %s", e)

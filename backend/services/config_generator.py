@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
-from ..models import Certificate, Network, Node, NetworkGroupFirewall
+from ..models import Network, Node, NetworkGroupFirewall, RevokedCertificate
 
 logger = logging.getLogger(__name__)
 
@@ -324,14 +324,13 @@ async def generate_config_for_node(
     group_firewalls = list(result.scalars().all())
 
     # Revoked-but-not-yet-expired cert fingerprints for this network -> pki.blocklist.
+    # Sourced from the network-scoped revoked_certificates table (indexed on network_id) so
+    # revocation survives node/cert deletion and this hot-path poll query stays a single
+    # indexed lookup.
     result = await session.execute(
-        select(Certificate.fingerprint)
-        .join(Node, Certificate.node_id == Node.id)
-        .where(
-            Node.network_id == node.network_id,
-            Certificate.revoked_at.is_not(None),
-            Certificate.expires_at > datetime.utcnow(),
-            Certificate.fingerprint.is_not(None),
+        select(RevokedCertificate.fingerprint).where(
+            RevokedCertificate.network_id == node.network_id,
+            RevokedCertificate.expires_at > datetime.utcnow(),
         )
     )
     blocklist = [row[0] for row in result.all()]

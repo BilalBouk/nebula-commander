@@ -23,7 +23,15 @@ from ..auth.permissions import (
 )
 from ..config import settings
 from ..database import get_session
-from ..models import Certificate, EnrollmentCode, Network, NetworkConfig, Node, User
+from ..models import (
+    Certificate,
+    EnrollmentCode,
+    Network,
+    NetworkConfig,
+    Node,
+    RevokedCertificate,
+    User,
+)
 from ..services.audit import get_client_ip, log_audit
 from ..services.cert_store import read_cert_store_file
 from ..services.config_generator import generate_config_for_node
@@ -455,6 +463,39 @@ async def update_node(
     return {"ok": True}
 
 
+async def _publish_node_certs_to_blocklist(
+    session: AsyncSession, node_id: int, network_id: int
+) -> None:
+    """Copy the node's revoked-or-about-to-be-removed unexpired cert fingerprints into the
+    network blocklist so they stay in pki.blocklist until natural expiry, regardless of
+    whether the Certificate/Node rows are later deleted. Idempotent per (network, fingerprint).
+    """
+    now = datetime.utcnow()
+    result = await session.execute(
+        select(Certificate.fingerprint, Certificate.expires_at).where(
+            Certificate.node_id == node_id,
+            Certificate.expires_at > now,
+            Certificate.fingerprint.is_not(None),
+        )
+    )
+    for fingerprint, expires_at in result.all():
+        existing = await session.execute(
+            select(RevokedCertificate.id).where(
+                RevokedCertificate.network_id == network_id,
+                RevokedCertificate.fingerprint == fingerprint,
+            )
+        )
+        if existing.scalar_one_or_none() is None:
+            session.add(
+                RevokedCertificate(
+                    network_id=network_id,
+                    fingerprint=fingerprint,
+                    expires_at=expires_at,
+                )
+            )
+    await session.flush()
+
+
 @router.delete("/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_node(
     node_id: int,
@@ -497,12 +538,17 @@ async def delete_node(
         except OSError:
             pass
 
-    # 3. Delete related records (certificates, network_configs, enrollment_codes)
+    # 3. Publish any still-valid cert fingerprints to the network blocklist BEFORE deleting
+    # the Certificate rows, so deleting (rather than revoking) a node still cuts its cert off
+    # the mesh via pki.blocklist until natural expiry.
+    await _publish_node_certs_to_blocklist(session, node_id, node.network_id)
+
+    # 4. Delete related records (certificates, network_configs, enrollment_codes)
     await session.execute(delete(Certificate).where(Certificate.node_id == node_id))
     await session.execute(delete(NetworkConfig).where(NetworkConfig.node_id == node_id))
     await session.execute(delete(EnrollmentCode).where(EnrollmentCode.node_id == node_id))
 
-    # 4. Delete the node
+    # 5. Delete the node
     user_result = await session.execute(select(User).where(User.oidc_sub == user.sub))
     db_user = user_result.scalar_one_or_none()
     await session.delete(node)
@@ -533,11 +579,13 @@ async def revoke_node_certificate(
         raise HTTPException(status_code=404, detail="Node not found")
     await _ensure_user_can_manage_node(user, session, node)
 
-    # Mark all certificates for this node as revoked
+    # Mark all certificates for this node as revoked and publish their fingerprints to the
+    # network blocklist (pki.blocklist) so the cert is cut off the mesh until natural expiry.
     await session.execute(
         update(Certificate).where(Certificate.node_id == node_id).values(revoked_at=datetime.utcnow())
     )
     await session.flush()
+    await _publish_node_certs_to_blocklist(session, node_id, node.network_id)
 
     # Release IP and remove host cert/key files
     if node.ip_address:
@@ -593,6 +641,8 @@ async def reenroll_node(
             update(Certificate).where(Certificate.node_id == node_id).values(revoked_at=datetime.utcnow())
         )
         await session.flush()
+        # Publish the old cert to the blocklist before its fingerprint is cleared below.
+        await _publish_node_certs_to_blocklist(session, node_id, node.network_id)
         ip_allocator = IPAllocator(session)
         await ip_allocator.release(node.network_id, node.ip_address)
         hosts_dir = Path(settings.cert_store_path) / str(node.network_id) / "hosts"
@@ -607,9 +657,13 @@ async def reenroll_node(
         node.cert_fingerprint = None
         await session.flush()
 
-    # Device is not enrolled until it polls with the new code
+    # Device is not enrolled until it polls with the new code. Bump the device-token version so
+    # the OLD device token (which may be compromised — that's why we're re-enrolling) can no
+    # longer poll /device/config or /device/certs and pull the freshly issued cert/key. The
+    # legitimate device gets a new token at the bumped version when it redeems the new code.
     node.first_polled_at = None
     node.last_seen = None
+    node.device_token_version = (node.device_token_version or 1) + 1
     await session.flush()
 
     # Load network and create new certificate for existing node
