@@ -85,11 +85,12 @@ def _endpoint_port(public_endpoint: Optional[str]) -> Optional[int]:
 
 
 def _listen_section(node: Node) -> dict[str, Any]:
-    """Listen config. Lighthouses/relays must be reachable on a fixed port (from their
-    public_endpoint, else 4242). Ordinary client nodes use port 0 (a random ephemeral
-    port) so multiple Nebula instances — including other meshes — can coexist on one host
-    without colliding on UDP 4242."""
-    if node.is_lighthouse or node.is_relay:
+    """Listen config. A node that others must reach on a fixed port — a lighthouse, a
+    relay, or any node with a public_endpoint (e.g. a port-forwarded server) — listens on
+    that port (from its public_endpoint, else 4242). Ordinary roaming client nodes use
+    port 0 (a random ephemeral port) so multiple Nebula instances — including other meshes
+    — can coexist on one host without colliding on UDP 4242."""
+    if node.is_lighthouse or node.is_relay or node.public_endpoint:
         return _default_listen(_endpoint_port(node.public_endpoint) or DEFAULT_LISTEN_PORT)
     return _default_listen(0)
 
@@ -261,11 +262,14 @@ def build_config(
     blocklist: optional list of revoked cert fingerprints to publish as pki.blocklist so every
       node refuses the revoked certs (Nebula's only revocation mechanism).
     """
-    # Lighthouses and relays with public_endpoint (for static_host_map)
+    # Any node with a public_endpoint is directly reachable there, so advertise it in
+    # static_host_map. This lets peers connect DIRECTLY (not just via the relay) to a
+    # reachable server node (e.g. a port-forwarded office server or PACS), which is far
+    # faster and more stable than relaying every packet through the lighthouse.
     hosts_with_endpoint = [
         (n.ip_address, n.public_endpoint)
         for n in peer_nodes
-        if (n.is_lighthouse or n.is_relay) and n.public_endpoint and n.ip_address
+        if n.public_endpoint and n.ip_address
     ]
     lighthouses_with_endpoint = [
         (n.ip_address, n.public_endpoint)
