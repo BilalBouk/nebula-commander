@@ -4,7 +4,7 @@ System-tray application for Windows: enroll with a one-time code, poll for confi
 
 ## Do I need a system service or network adapter?
 
-- **No Windows service.** The tray runs as a normal app. **Start at login** only adds an entry to the Registry (`HKCU\...\Run`) so the app starts when you sign in. Nothing is installed as a Windows Service. If you want ncclient to run when no one is logged in, use Task Scheduler or NSSM (see [examples/README-startup.md](../examples/README-startup.md)).
+- **Prefer the MSI service for unattended machines.** The MSI installer (see [installer/windows](../../installer/windows/README.md)) registers the **ncclient Windows service** (WinSW, LocalSystem, auto-start): it runs with no one logged in, needs no per-user elevation, and stores token/config machine-wide under `%ProgramData%\nebula-commander`. The tray app remains for interactive use; **do not run both at once** (both would manage Nebula). **Start at login** in the tray only adds a Registry `HKCU\...\Run` entry for the signed-in user.
 
 - **Nebula’s virtual network adapter.** When you use **Start polling** and Nebula is running, the Nebula binary creates a virtual network interface (Nebula on Windows uses [Wintun](https://www.wintun.net/)). No separate driver install is required for typical use: the official Nebula Windows release works out of the box. The first time Nebula creates the interface, Windows may show a one-time prompt to trust the driver. If you see errors like "create wintun interface failed", try running the tray (or `nebula.exe`) once as Administrator, or see [Nebula’s Windows documentation](https://github.com/slackhq/nebula#windows) and [Wintun](https://www.wintun.net/) for troubleshooting.
 

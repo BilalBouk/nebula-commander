@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <?define Version = "0.0.0" ?>
   <Package Name="Nebula Commander"
            Manufacturer="NixRTR"
@@ -58,6 +59,46 @@
                     Directory="ProgramMenuDir"
                     WorkingDirectory="INSTALLDIR" />
         </File>
+      </Component>
+      <Component Id="NebulaExe" Guid="7F3A1B2C-4D5E-4F6A-9B8C-2D3E4F5A6B7C">
+        <File Id="NebulaExe"
+              Source="redist\nebula.exe"
+              KeyPath="yes" />
+      </Component>
+      <Component Id="NcclientServiceXml" Guid="8A4B2C3D-5E6F-4A7B-8C9D-3E4F5A6B7C8D">
+        <File Id="NcclientServiceXml"
+              Source="ncclient-service.xml"
+              Name="ncclient-service.xml"
+              KeyPath="yes" />
+      </Component>
+      <Component Id="NcclientServiceExe" Guid="9B5C3D4E-6F7A-4B8C-9D0E-4F5A6B7C8D9E">
+        <File Id="NcclientServiceExe"
+              Source="redist\ncclient-service.exe"
+              KeyPath="yes" />
+        <!-- ncclient-service.exe is WinSW; it reads ncclient-service.xml and runs
+             "ncclient.exe run" as a background service (LocalSystem, auto-start).
+             The service waits for enrollment, so starting it pre-enroll is safe. -->
+        <ServiceInstall Id="NcclientServiceInstall"
+                        Name="ncclient"
+                        DisplayName="Nebula Commander Client"
+                        Description="Keeps Nebula VPN configuration and certificates up to date and supervises the Nebula tunnel."
+                        Start="auto"
+                        Type="ownProcess"
+                        ErrorControl="normal"
+                        Account="LocalSystem"
+                        Vital="yes">
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              RestartServiceDelayInSeconds="30"
+                              ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <ServiceControl Id="NcclientServiceControl"
+                        Name="ncclient"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="no" />
       </Component>
     </ComponentGroup>
 

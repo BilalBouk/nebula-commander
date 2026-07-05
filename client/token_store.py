@@ -20,6 +20,17 @@ def _token_file_path() -> str | None:
     return path or None
 
 
+def _machine_token_path() -> str | None:
+    """Machine-scope token path (service mode), or None in user scope.
+    Keyring is skipped in machine scope: enrollment (admin) and the service
+    (LocalSystem/root) run as different accounts with different keyrings, so a
+    file in the ACL'd machine config dir is the only store both can read."""
+    from client.config import machine_scope, config_dir
+    if not machine_scope():
+        return None
+    return os.path.join(config_dir(), "device-token")
+
+
 def _default_token_path() -> str:
     """Path used when keyring is not available (e.g. Linux binary without keyring)."""
     return os.path.join(os.path.expanduser("~"), ".nebula", "device-token")
@@ -47,6 +58,9 @@ def get_token() -> str | None:
     path = _token_file_path()
     if path:
         return _read_token_file(path)
+    machine_path = _machine_token_path()
+    if machine_path:
+        return _read_token_file(machine_path)
     try:
         import keyring
         value = keyring.get_password(_SERVICE, _KEY)
@@ -62,6 +76,10 @@ def set_token(token: str) -> None:
     path = _token_file_path()
     if path:
         _write_token_file(path, token)
+        return
+    machine_path = _machine_token_path()
+    if machine_path:
+        _write_token_file(machine_path, token)
         return
     try:
         import keyring

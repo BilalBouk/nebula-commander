@@ -23,6 +23,8 @@ LICENSE file in this directory for the full text.
 import argparse
 import hashlib
 import os
+import random
+import re
 import shutil
 import signal
 import subprocess
@@ -84,7 +86,12 @@ def _server_url(server: str) -> str:
 
 def _default_output_dir() -> str:
     """Default directory for config/certs; Windows-friendly."""
+    from client.config import machine_scope, machine_config_dir
     if sys.platform == "win32":
+        if machine_scope():
+            # Service mode: keep everything under ProgramData (ACL'd to
+            # SYSTEM/Administrators by client.config), not a user profile.
+            return os.path.join(machine_config_dir(), "nebula")
         return os.path.join(os.path.expanduser("~"), ".nebula")
     return "/etc/nebula"
 
@@ -104,9 +111,20 @@ def cmd_enroll(server: str, code: str) -> None:
     data = r.json()
     token = data["device_token"]
     from client.token_store import set_token
-    from client.config import load_settings, save_settings
-    set_token(token)
-    save_settings({**load_settings(), "server": base})
+    from client.config import load_settings, save_settings, machine_scope
+    try:
+        set_token(token)
+        save_settings({**load_settings(), "server": base})
+    except PermissionError:
+        if machine_scope():
+            print(
+                "Permission denied writing machine-wide token/settings.\n"
+                "Machine enrollment stores secrets under a SYSTEM/Administrators-only "
+                "directory; run this command from an elevated (Administrator) prompt.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        raise
     print("Enrolled. Token saved.")
     print("Run: ncclient run")
 
@@ -255,6 +273,79 @@ def is_process_elevated() -> bool:
     return _windows_process_is_elevated()
 
 
+# Nebula hot-reloads these config sections on SIGHUP without dropping tunnels.
+# Anything else (tun, listen, static_host_map, lighthouse hosts, ...) needs a restart.
+_RELOADABLE_SECTIONS = {"pki", "firewall", "punchy", "logging", "stats"}
+
+# Health probe: restart Nebula only after this many consecutive failed probes,
+# and only if the probe has succeeded at least once since Nebula started (so
+# deployments where ICMP to the lighthouse is blocked never trigger restarts).
+_PROBE_FAILURES_BEFORE_RESTART = 3
+
+
+def _top_level_sections(config_text: str) -> dict[str, str]:
+    """Split YAML text into top-level sections keyed by the top-level key name."""
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in config_text.splitlines():
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*):", line)
+        if m:
+            current = m.group(1)
+            sections[current] = [line]
+        elif current is not None:
+            sections[current].append(line)
+    return {k: "\n".join(v) for k, v in sections.items()}
+
+
+def _changed_sections(old_text: str | None, new_text: str) -> set[str] | None:
+    """Top-level config sections that differ, or None when there is nothing to compare."""
+    if not old_text:
+        return None
+    old_s = _top_level_sections(old_text)
+    new_s = _top_level_sections(new_text)
+    return {k for k in set(old_s) | set(new_s) if old_s.get(k) != new_s.get(k)}
+
+
+def _lighthouse_overlay_ips(config_text: str) -> list[str]:
+    """Extract lighthouse overlay IPs from config YAML (lighthouse.hosts list)."""
+    section = _top_level_sections(config_text).get("lighthouse", "")
+    ips: list[str] = []
+    in_hosts = False
+    for line in section.splitlines():
+        if re.match(r"^\s+hosts:\s*$", line):
+            in_hosts = True
+            continue
+        if in_hosts:
+            m = re.match(r"^\s+-\s*['\"]?(\d{1,3}(?:\.\d{1,3}){3})", line)
+            if m:
+                ips.append(m.group(1))
+            elif line.strip():
+                in_hosts = False
+    return ips
+
+
+def _ping_ok(ip: str, timeout_s: int = 2) -> bool:
+    """One ICMP echo to an overlay IP; True when the tunnel passes traffic."""
+    if sys.platform == "win32":
+        cmd = ["ping", "-n", "1", "-w", str(timeout_s * 1000), ip]
+        extra: dict = {"creationflags": subprocess.CREATE_NO_WINDOW}
+    else:
+        cmd = ["ping", "-c", "1", "-W", str(timeout_s), ip]
+        extra = {}
+    try:
+        res = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_s + 3,
+            env=_env_for_system_binaries(),
+            **extra,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
 def _start_nebula(nebula_bin: str, output_dir: str) -> subprocess.Popen | None:
     output_dir = os.path.expanduser(output_dir)
     config = _config_path(output_dir)
@@ -362,30 +453,62 @@ def _stop_nebula(proc: subprocess.Popen | None) -> None:
             except Exception:
                 pass
         print("Stopped Nebula")
-        return
-    if sys.platform == "win32":
-        # We started Nebula elevated (runas) so we have no handle; try to stop by name.
+    # We always hold the Popen handle for processes we start; never kill by image
+    # name here (taskkill /IM would take down Nebula processes we don't own).
+
+
+def _ensure_nebula_running(
+    nebula_proc: subprocess.Popen | None,
+    nebula_bin: str,
+    output_dir: str,
+) -> subprocess.Popen | None:
+    """(Re)start Nebula from the on-disk config if it is not running.
+    Called every loop iteration so a crashed Nebula is restarted even while the
+    control plane is unreachable, and so a cached config brings the tunnel up
+    at boot before the first successful poll."""
+    if nebula_proc is not None and nebula_proc.poll() is None:
+        return nebula_proc
+    return _start_nebula(nebula_bin, output_dir) or nebula_proc
+
+
+def _apply_config_change(
+    nebula_proc: subprocess.Popen | None,
+    nebula_bin: str,
+    output_dir: str,
+    changed: set[str] | None,
+) -> subprocess.Popen | None:
+    """Apply a config change to a running Nebula: SIGHUP reload (tunnels stay up)
+    when only hot-reloadable sections changed, full restart otherwise."""
+    if (
+        nebula_proc is not None
+        and nebula_proc.poll() is None
+        and changed  # non-empty and known
+        and changed <= _RELOADABLE_SECTIONS
+        and hasattr(signal, "SIGHUP")
+    ):
         try:
-            subprocess.run(
-                ["taskkill", "/IM", "nebula.exe", "/F"],
-                capture_output=True,
-                timeout=10,
-            )
-            print("Stopped Nebula")
-        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
-            pass
+            nebula_proc.send_signal(signal.SIGHUP)
+            print(f"Reloaded Nebula config in place (SIGHUP; changed: {', '.join(sorted(changed))})")
+            return nebula_proc
+        except Exception as e:
+            print(f"SIGHUP reload failed ({e}); restarting Nebula", file=sys.stderr)
+    _stop_nebula(nebula_proc)
+    return _start_nebula(nebula_bin, output_dir)
 
 
-def _restart_systemd_service(service_name: str) -> bool:
+def _restart_systemd_service(service_name: str, reload_ok: bool = False) -> bool:
+    """Restart (or, when only hot-reloadable sections changed, reload-or-restart)
+    the given systemd service."""
+    verb = "reload-or-restart" if reload_ok else "restart"
     try:
         subprocess.run(
-            ["systemctl", "restart", service_name],
+            ["systemctl", verb, service_name],
             check=True,
             capture_output=True,
             timeout=30,
             env=_env_for_system_binaries(),
         )
-        print(f"Restarted systemd service: {service_name}")
+        print(f"systemctl {verb} {service_name}: ok")
         return True
     except FileNotFoundError:
         print("systemctl not found (not Linux systemd?)", file=sys.stderr)
@@ -546,20 +669,27 @@ def run_poll_loop(
     from client.dns_apply import apply_split_horizon_dns, remove_split_horizon_dns
 
     base = _server_url(server)
-    token = get_token()
-    if not token:
-        if status_callback:
-            status_callback("error", "Token not found. Enroll first.")
-        else:
-            print("Token not found. Run 'ncclient enroll' first.", file=sys.stderr)
-            sys.exit(1)
-        return
     url = f"{base}/api/device/config"
     dns_url = f"{base}/api/device/dns-client-config"
     output_dir = os.path.expanduser(output_dir)
     os.makedirs(output_dir, exist_ok=True)
     last_etag: str | None = None
     nebula_proc: subprocess.Popen | None = None
+
+    # Wait for enrollment instead of exiting: as a background service we may be
+    # started before the admin has enrolled this machine.
+    token = get_token()
+    if not token:
+        msg = "Not enrolled yet. Run 'ncclient enroll' (waiting for token...)"
+        if status_callback:
+            status_callback("error", msg)
+        else:
+            print(msg, file=sys.stderr)
+        while token is None and not stop_event.is_set():
+            stop_event.wait(timeout=15)
+            token = get_token()
+        if token is None:
+            return
 
     # Clean slate on start: remove any split-horizon from a previous crash
     if accept_dns:
@@ -568,36 +698,99 @@ def run_poll_loop(
         remove_split_horizon_dns()
 
     def _sleep() -> None:
+        # Jitter +/-10% so a fleet doesn't poll in lockstep after a server restart.
+        target = interval * random.uniform(0.9, 1.1)
         elapsed = 0
-        while elapsed < interval and not stop_event.is_set():
+        while elapsed < target and not stop_event.is_set():
             stop_event.wait(timeout=1)
             elapsed += 1
 
     if not status_callback:
         if nebula_bin:
-            print(f"Orchestrating Nebula: {nebula_bin} (restart on config change)")
+            print(f"Orchestrating Nebula: {nebula_bin} (reload/restart on config change)")
         if restart_service:
-            print(f"Orchestrating service: systemctl restart {restart_service} on config change")
+            print(f"Orchestrating service: systemctl reload-or-restart {restart_service} on config change")
         print(f"Polling {url} every {interval}s. Output: {output_dir}. Ctrl+C to stop.")
     elif status_callback:
         status_callback("idle", "Polling...")
 
+    # Cached config from a previous run lets us bring the tunnel up immediately,
+    # even if the control plane is unreachable right now.
+    config_path = _config_path(output_dir)
+    last_config_text: str | None = None
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8", errors="replace") as f:
+                last_config_text = f.read()
+        except OSError:
+            last_config_text = None
+    probe_ips = _lighthouse_overlay_ips(last_config_text) if last_config_text else []
+    probe_armed = False
+    probe_failures = 0
+    consecutive_401 = 0
+
     try:
         while not stop_event.is_set():
+            # Supervise Nebula independently of poll success: a crashed Nebula is
+            # restarted even while the control plane is down, and a control-plane
+            # error never tears down a working tunnel.
+            if nebula_bin:
+                prev_proc = nebula_proc
+                nebula_proc = _ensure_nebula_running(nebula_proc, nebula_bin, output_dir)
+                if nebula_proc is not prev_proc:
+                    probe_armed = False
+                    probe_failures = 0
+                # Tunnel-health probe: process alive is not the same as tunnel up.
+                if nebula_proc is not None and nebula_proc.poll() is None and probe_ips:
+                    if _ping_ok(probe_ips[0]):
+                        probe_armed = True
+                        probe_failures = 0
+                    elif probe_armed:
+                        probe_failures += 1
+                        if probe_failures >= _PROBE_FAILURES_BEFORE_RESTART:
+                            msg = (
+                                f"Tunnel probe to {probe_ips[0]} failed "
+                                f"{probe_failures}x; restarting Nebula"
+                            )
+                            if status_callback:
+                                status_callback("error", msg)
+                            else:
+                                print(msg, file=sys.stderr)
+                            _stop_nebula(nebula_proc)
+                            nebula_proc = _start_nebula(nebula_bin, output_dir)
+                            probe_armed = False
+                            probe_failures = 0
             try:
                 headers = {"Authorization": f"Bearer {token}"}
                 if last_etag is not None:
                     headers["If-None-Match"] = last_etag
                 r = requests.get(url, headers=headers, timeout=30)
                 if r.status_code == 401:
+                    # Never tear down a working tunnel over a control-plane auth
+                    # failure; keep polling in case the server recovers, and tell
+                    # the operator to re-enroll if it persists.
+                    # A re-enroll done while we run (new token on disk) is picked
+                    # up here so the service recovers without a restart.
+                    fresh_token = get_token()
+                    if fresh_token and fresh_token != token:
+                        token = fresh_token
+                        consecutive_401 = 0
+                        continue
+                    consecutive_401 += 1
+                    msg = "Control plane rejected device token (401); tunnel kept up, retrying."
+                    if consecutive_401 >= 3:
+                        msg = (
+                            "Device token rejected 3+ times (revoked or re-enrolled elsewhere?). "
+                            "Tunnel kept up; re-enroll with a new code to restore config updates."
+                        )
                     if status_callback:
-                        status_callback("error", "Token invalid or expired. Re-enroll.")
-                        return
-                    print("Token invalid or expired. Re-enroll with a new code.", file=sys.stderr)
-                    sys.exit(1)
+                        status_callback("error", msg)
+                    elif consecutive_401 in (1, 3) or consecutive_401 % 60 == 0:
+                        print(msg, file=sys.stderr)
+                    _sleep()
+                    continue
+                consecutive_401 = 0
                 if r.status_code == 304:
-                    if nebula_bin and (nebula_proc is None or nebula_proc.poll() is not None):
-                        nebula_proc = _start_nebula(nebula_bin, output_dir)
                     _sleep()
                     continue
                 if not r.ok:
@@ -611,23 +804,33 @@ def run_poll_loop(
                 etag_raw = r.headers.get("ETag")
                 config_id = etag_raw.strip('"') if etag_raw is not None else hashlib.sha256(r.content).hexdigest()
                 if last_etag is not None and config_id == last_etag:
-                    if nebula_bin and (nebula_proc is None or nebula_proc.poll() is not None):
-                        nebula_proc = _start_nebula(nebula_bin, output_dir)
                     _sleep()
                     continue
                 last_etag = config_id
-                config_path = _config_path(output_dir)
+                new_config_text = r.content.decode("utf-8", errors="replace")
+                changed = _changed_sections(last_config_text, new_config_text)
                 with open(config_path, "wb") as f:
                     f.write(r.content)
+                last_config_text = new_config_text
+                probe_ips = _lighthouse_overlay_ips(new_config_text)
                 if not status_callback:
                     print(f"Wrote {config_path}")
                 if status_callback:
                     status_callback("connected", "Config updated")
-                if nebula_bin:
-                    _stop_nebula(nebula_proc)
-                    nebula_proc = _start_nebula(nebula_bin, output_dir)
-                if restart_service:
-                    _restart_systemd_service(restart_service)
+                if changed is not None and not changed:
+                    # Byte-identical to the cached config (first poll after a
+                    # restart): leave the running tunnel completely untouched.
+                    pass
+                else:
+                    reload_ok = changed is not None and changed <= _RELOADABLE_SECTIONS
+                    if nebula_bin:
+                        prev_proc = nebula_proc
+                        nebula_proc = _apply_config_change(nebula_proc, nebula_bin, output_dir, changed)
+                        if nebula_proc is not prev_proc:
+                            probe_armed = False
+                            probe_failures = 0
+                    if restart_service:
+                        _restart_systemd_service(restart_service, reload_ok=reload_ok)
 
                 # Fetch split-horizon DNS client config and optionally apply
                 dns_path = _dns_client_config_path(output_dir)
@@ -733,17 +936,36 @@ def main() -> None:
 
     p_enroll = sub.add_parser("enroll", help="Enroll with a one-time code from the UI")
     p_enroll.add_argument("--code", "-c", required=True, help="Enrollment code")
+    p_enroll.add_argument("--machine", action="store_true", help="Store token/settings machine-wide (ProgramData / /etc) for service use, not in the user profile")
 
     p_run = sub.add_parser("run", help="Run daemon: poll for config and certs, optionally start/restart Nebula (dnclientd-style)")
     p_run.add_argument("--output-dir", "-o", default=None, help="Directory to write config.yaml, ca.crt, host.crt (default: /etc/nebula on Linux, ~/.nebula on Windows)")
     p_run.add_argument("--interval", "-i", type=int, default=60, help="Poll interval in seconds (default: 60)")
-    p_run.add_argument("--nebula", "-n", metavar="PATH", help="Path to nebula binary if not in PATH (default: run 'nebula' from PATH)")
+    p_run.add_argument("--nebula", "-n", metavar="PATH", default=os.environ.get("NEBULA_COMMANDER_NEBULA") or None, help="Path to nebula binary if not in PATH (default: NEBULA_COMMANDER_NEBULA env or 'nebula' from PATH)")
     p_run.add_argument("--restart-service", "-r", metavar="NAME", help="Restart this systemd service after config change instead of running nebula (e.g. nebula)")
-    p_run.add_argument("--accept-dns", action="store_true", help="Apply split-horizon DNS (systemd-resolved / NRPT) when dns-client.json is updated; remove on exit")
+    p_run.add_argument("--accept-dns", action="store_true", default=os.environ.get("NEBULA_COMMANDER_ACCEPT_DNS", "").strip().lower() in ("1", "true", "yes"), help="Apply split-horizon DNS (systemd-resolved / NRPT) when dns-client.json is updated; remove on exit (default: NEBULA_COMMANDER_ACCEPT_DNS env)")
+    p_run.add_argument("--machine", action="store_true", help="Use machine-wide token/settings (ProgramData / /etc); implied when running as a Windows service")
 
     args = ap.parse_args()
-    from client.config import load_settings
+    if getattr(args, "machine", False):
+        os.environ["NEBULA_COMMANDER_MACHINE_SCOPE"] = "1"
+    from client.config import load_settings, machine_scope
     server = (args.server or "").strip() or (load_settings().get("server") or "").strip() or None
+    if args.cmd == "run" and not server and machine_scope():
+        # Service mode: the service may start before the admin has enrolled.
+        # Wait for 'ncclient enroll --machine --server ...' to write settings
+        # instead of exiting (which would make the service flap).
+        print("No server configured yet. Waiting for 'ncclient enroll --machine --server <url> --code <code>' ...", file=sys.stderr)
+        _wait_stop = threading.Event()
+        try:
+            signal.signal(signal.SIGTERM, lambda s, f: _wait_stop.set())
+        except (ValueError, OSError):
+            pass
+        while not server and not _wait_stop.is_set():
+            _wait_stop.wait(timeout=15)
+            server = (load_settings().get("server") or "").strip() or None
+        if not server:
+            return
     if args.cmd == "run" and not server:
         print("Set --server or NEBULA_COMMANDER_SERVER to your Nebula Commander URL.", file=sys.stderr)
         sys.exit(1)

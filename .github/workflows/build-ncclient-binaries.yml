@@ -186,12 +186,18 @@ jobs:
           path: artifacts/ncclient-tray-windows-amd64.exe
           if-no-files-found: error
 
-  # Build Windows MSI installer (ncclient + ncclient-tray)
+  # Build Windows MSI installer (ncclient + ncclient-tray + nebula + WinSW service)
   build-msi:
     name: Build Windows MSI
     runs-on: windows-latest
     needs: [build, build-windows-tray]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    env:
+      NEBULA_VERSION: v1.10.2
+      # From the official release SHASUM256.txt for v1.10.2
+      NEBULA_ZIP_SHA256: e0afc7e52baf1268f8446f83798859bc81f7a6966d4a0d874d263af32abfd765
+      WINSW_VERSION: v2.12.0
+      WINSW_SHA256: 05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -207,6 +213,23 @@ jobs:
           Copy-Item "artifacts-in\ncclient-windows-amd64.exe\ncclient-windows-amd64.exe" "installer\windows\redist\ncclient.exe"
           Copy-Item "artifacts-in\ncclient-tray-windows-amd64.exe\ncclient-tray-windows-amd64.exe" "installer\windows\redist\ncclient-tray.exe"
 
+      - name: Download Nebula (pinned, checksum-verified)
+        run: |
+          $url = "https://github.com/slackhq/nebula/releases/download/$env:NEBULA_VERSION/nebula-windows-amd64.zip"
+          Invoke-WebRequest -Uri $url -OutFile nebula-windows-amd64.zip
+          $hash = (Get-FileHash nebula-windows-amd64.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:NEBULA_ZIP_SHA256) { Write-Error "nebula zip SHA256 mismatch: $hash"; exit 1 }
+          Expand-Archive nebula-windows-amd64.zip -DestinationPath nebula-extract
+          Copy-Item nebula-extract\nebula.exe installer\windows\redist\nebula.exe
+
+      - name: Download WinSW (pinned, checksum-verified)
+        run: |
+          $url = "https://github.com/winsw/winsw/releases/download/$env:WINSW_VERSION/WinSW-x64.exe"
+          Invoke-WebRequest -Uri $url -OutFile WinSW-x64.exe
+          $hash = (Get-FileHash WinSW-x64.exe -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:WINSW_SHA256) { Write-Error "WinSW SHA256 mismatch: $hash"; exit 1 }
+          Copy-Item WinSW-x64.exe installer\windows\redist\ncclient-service.exe
+
       - name: Install WiX 5
         run: dotnet tool install --global wix --version 5.0.2
 
@@ -217,7 +240,9 @@ jobs:
         id: build-msi
         working-directory: installer/windows
         run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
+          $ref = "${{ github.ref_name }}"
+          # MSI ProductVersion must be numeric x.y.z; use a placeholder off-tag.
+          $version = if ("${{ github.ref }}".StartsWith("refs/tags/")) { $ref.TrimStart('v') } else { "0.0.1" }
           wix build Product.wxs -ext WixToolset.Util.wixext -o NebulaCommander-windows-amd64.msi -d "Version=$version" -arch x64
           if (-not (Test-Path NebulaCommander-windows-amd64.msi)) { exit 1 }
           (Get-Item NebulaCommander-windows-amd64.msi).Length

@@ -1,0 +1,33 @@
+<!--
+  WinSW configuration for the Nebula Commander client service.
+  Installed next to ncclient-service.exe (WinSW) in the install directory; the
+  MSI registers the service, WinSW supervises ncclient, and ncclient supervises
+  the Nebula tunnel process.
+
+  After install, enroll the machine once from an elevated prompt (flags spelled
+  with underscores here because XML comments cannot contain double hyphens):
+    ncclient enroll [machine] [server] https://your-commander.example.com [code] XXXXXXXX
+  where each [x] is the corresponding long option. See installer/windows/README.md.
+  The service picks the enrollment up automatically (no restart needed).
+-->
+<service>
+  <id>ncclient</id>
+  <name>Nebula Commander Client</name>
+  <description>Keeps Nebula VPN configuration and certificates up to date and supervises the Nebula tunnel. Auto-recovers the tunnel on failure.</description>
+  <executable>%BASE%\ncclient.exe</executable>
+  <arguments>run</arguments>
+  <env name="NEBULA_COMMANDER_MACHINE_SCOPE" value="1"/>
+  <env name="NEBULA_COMMANDER_NEBULA" value="%BASE%\nebula.exe"/>
+  <!-- Apply split-horizon DNS (NRPT) when the network has DNS enabled; no-op otherwise. -->
+  <env name="NEBULA_COMMANDER_ACCEPT_DNS" value="1"/>
+  <onfailure action="restart" delay="15 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <!-- Stop ncclient first so it can terminate Nebula and clean up NRPT rules. -->
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+  <stoptimeout>25 sec</stoptimeout>
+  <logpath>%ProgramData%\nebula-commander\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>4</keepFiles>
+  </log>
+</service>
