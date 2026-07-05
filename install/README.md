@@ -27,15 +27,21 @@ they run.
 
 ## Windows (MSI + service)
 
-From an **elevated** PowerShell (Run as administrator):
+Download [install-windows.cmd](https://raw.githubusercontent.com/BilalBouk/nebula-commander/security-hardening/install/install-windows.cmd),
+then double-click it (or run from a command prompt) with your enrollment code:
 
-```powershell
-irm https://raw.githubusercontent.com/BilalBouk/nebula-commander/security-hardening/install/install-windows.ps1 -OutFile install-windows.ps1
-.\install-windows.ps1 -Code XXXXXXXX
+```
+install-windows.cmd XXXXXXXX
 ```
 
-Installs the MSI (ncclient + Nebula + wintun.dll + the `ncclient` Windows
-service) and enrolls in machine scope so the service runs with no user logged in.
+The script self-elevates (UAC prompt), downloads and installs the MSI (ncclient +
+Nebula + wintun.dll + the `ncclient` Windows service), and enrolls in machine
+scope so the service runs with no user logged in. A batch file is used instead of
+PowerShell so it runs regardless of the PowerShell script execution policy, which
+blocks `.ps1` files by default on most machines.
+
+> A PowerShell version (`install-windows.ps1`) is also provided for anyone who
+> prefers it, but it requires an execution-policy bypass on locked-down machines.
 
 ---
 
