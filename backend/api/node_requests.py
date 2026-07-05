@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from ..auth.permissions import check_network_permission
 from ..database import get_session
 from ..models import NodeRequest, Network, User, NetworkPermission, NetworkSettings, Node
 from ..services.audit import get_client_ip, log_audit
+from ..utils.validation import validate_hostname
 
 router = APIRouter(prefix="/api/node-requests", tags=["node-requests"])
 
@@ -22,6 +23,11 @@ class NodeRequestCreate(BaseModel):
     groups: List[str] = []
     is_lighthouse: bool = False
     is_relay: bool = False
+
+    @field_validator("hostname")
+    @classmethod
+    def _validate_hostname(cls, v: str) -> str:
+        return validate_hostname(v)
 
 
 class NodeRequestResponse(BaseModel):
@@ -76,18 +82,29 @@ async def create_node_request(
     has_permission = await check_network_permission(
         db_user.id, body.network_id, "manage_nodes", session
     )
-    
+
+    # Membership: does the caller have ANY permission row on this network?
+    member_result = await session.execute(
+        select(NetworkPermission).where(
+            NetworkPermission.user_id == db_user.id,
+            NetworkPermission.network_id == body.network_id,
+        )
+    )
+    is_member = member_result.scalar_one_or_none() is not None
+
     # Check network settings for auto-approve
     settings_result = await session.execute(
         select(NetworkSettings).where(NetworkSettings.network_id == body.network_id)
     )
     network_settings = settings_result.scalar_one_or_none()
-    
+
     auto_approve = False
     if has_permission:
         # Users with manage_nodes permission can create nodes directly
         auto_approve = True
-    elif network_settings and network_settings.auto_approve_nodes:
+    elif is_member and network_settings and network_settings.auto_approve_nodes:
+        # Auto-approve only fast-tracks MEMBERS; a non-member must never get an
+        # instant node just because the network enabled auto-approve (audit).
         auto_approve = True
     
     # Create node request
@@ -112,8 +129,8 @@ async def create_node_request(
         from ..services.ip_allocator import IPAllocator
         
         ip_allocator = IPAllocator(session)
-        ip_address = await ip_allocator.allocate_next(body.network_id)
-        
+        ip_address = await ip_allocator.allocate(network.id, network.subnet_cidr)
+
         node = Node(
             network_id=body.network_id,
             hostname=body.hostname,
@@ -299,10 +316,17 @@ async def approve_node_request(
     
     # Create the node
     from ..services.ip_allocator import IPAllocator
-    
+
+    net_result = await session.execute(
+        select(Network).where(Network.id == node_request.network_id)
+    )
+    req_network = net_result.scalar_one_or_none()
+    if not req_network:
+        raise HTTPException(status_code=404, detail="Network not found")
+
     ip_allocator = IPAllocator(session)
-    ip_address = await ip_allocator.allocate_next(node_request.network_id)
-    
+    ip_address = await ip_allocator.allocate(req_network.id, req_network.subnet_cidr)
+
     node = Node(
         network_id=node_request.network_id,
         hostname=node_request.hostname,

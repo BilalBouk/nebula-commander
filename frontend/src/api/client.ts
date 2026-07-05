@@ -82,8 +82,14 @@ function scheduleTokenRefresh(token: string): void {
   }
 }
 
-/** Try to obtain a dev token when backend is in debug mode (development). */
+/**
+ * Try to obtain a dev token. This is a DEVELOPMENT-ONLY convenience and is compiled out of
+ * production builds: `import.meta.env.DEV` is false in `vite build`, so the shipped bundle
+ * never silently self-provisions an admin credential (security audit C2). Real auth goes
+ * through the OIDC login flow.
+ */
 async function tryDevToken(): Promise<boolean> {
+  if (!import.meta.env.DEV) return false;
   try {
     const res = await fetch(`${API_BASE}/auth/dev-token`);
     if (!res.ok) return false;

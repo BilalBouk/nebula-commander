@@ -27,3 +27,7 @@ htmlcov/
 .env
 .env.*
 docker/.env
+# Operator secrets (rendered env files) must never enter the build context / image.
+docker/env.d/
+env.d/
+secrets/

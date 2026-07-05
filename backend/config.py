@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     jwt_secret_file: Optional[str] = None
     jwt_algorithm: str = "HS256"
     jwt_expiration_minutes: int = 60 * 24  # 24 hours
+    # Issuer claim stamped on (and required for) all locally-minted JWTs (user session, device, reauth).
+    # Lets decode_token distinguish our own HS256 tokens from OIDC provider (RS256) tokens and fail closed.
+    local_jwt_issuer: str = "nebula-commander"
+
+    # Dev token: explicit opt-in only. NEVER couple this to "OIDC not configured".
+    # When false (default) GET /api/auth/dev-token returns 404 even if OIDC is unset.
+    enable_dev_token: bool = False
 
     # Default certificate expiry (days)
     default_cert_expiry_days: int = 365
@@ -134,6 +141,14 @@ class Settings(BaseSettings):
         case_sensitive = False
 
 
+# Known-insecure JWT secret values that must never be used in a running deployment.
+_INSECURE_JWT_SECRETS = {
+    "change-this-in-production",
+    "CHANGE_ME_GENERATE_RANDOM_32_CHARS_MIN",
+}
+_MIN_JWT_SECRET_LEN = 32
+
+
 def load_jwt_secret(settings_obj: Settings) -> str:
     """Load JWT secret from file if specified."""
     if settings_obj.jwt_secret_file and os.path.exists(settings_obj.jwt_secret_file):
@@ -145,6 +160,23 @@ def load_jwt_secret(settings_obj: Settings) -> str:
         except Exception as e:
             print(f"Warning: Could not read JWT secret: {e}")
     return settings_obj.jwt_secret_key
+
+
+def validate_jwt_secret(secret: str) -> None:
+    """Fail closed at startup on a missing/default/weak JWT secret.
+
+    This secret signs every locally-minted token (user sessions, device tokens, reauth
+    tokens) and the session cookie, so a known/weak value is a full trust-plane bypass.
+    Enforced exactly like the encryption key.
+    """
+    secret = (secret or "").strip()
+    if not secret or secret in _INSECURE_JWT_SECRETS or len(secret) < _MIN_JWT_SECRET_LEN:
+        raise SystemExit(
+            "Insecure or missing JWT secret. Set NEBULA_COMMANDER_JWT_SECRET_KEY or "
+            "NEBULA_COMMANDER_JWT_SECRET_FILE to a strong random value "
+            f"(>= {_MIN_JWT_SECRET_LEN} chars, not a placeholder). "
+            "Generate with: openssl rand -base64 48"
+        )
 
 
 def load_oidc_secret(settings_obj: Settings) -> Optional[str]:
@@ -202,6 +234,7 @@ def load_encryption_key(settings_obj: Settings) -> str:
 settings = Settings()
 if not getattr(settings, "_jwt_loaded", False):
     settings.jwt_secret_key = load_jwt_secret(settings)
+    validate_jwt_secret(settings.jwt_secret_key)
     settings.oidc_client_secret = load_oidc_secret(settings)
     settings.smtp_password = load_smtp_password(settings)
     settings._encryption_key = load_encryption_key(settings)

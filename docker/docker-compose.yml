@@ -12,8 +12,12 @@ services:
     image: ghcr.io/nixrtr/nebula-commander-backend:latest
     container_name: nebula-commander-backend
     restart: unless-stopped
+    # The backend is reached by the frontend over the internal Docker network. Bind the host
+    # publish to loopback only so the API (and its 0.0.0.0 in-container bind) is never exposed
+    # directly on the host's external interfaces (audit). Remove this mapping entirely if you
+    # do not need host-local access for debugging.
     ports:
-      - "${BACKEND_PORT:-8081}:8081"
+      - "127.0.0.1:${BACKEND_PORT:-8081}:8081"
     volumes:
       # Persistent data storage
       - nebula-commander-data:/var/lib/nebula-commander

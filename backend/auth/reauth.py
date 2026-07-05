@@ -51,11 +51,11 @@ def mark_reauth_completed(user_sub: str, challenge: str) -> bool:
         return False
     
     data = _reauth_challenges[user_sub]
-    
-    # Check if challenge matches and hasn't expired
-    if data["challenge"] != challenge:
+
+    # Check if challenge matches (timing-safe) and hasn't expired
+    if not secrets.compare_digest(str(data["challenge"]), str(challenge)):
         return False
-    
+
     if datetime.utcnow() > data["expires_at"]:
         del _reauth_challenges[user_sub]
         return False
@@ -80,11 +80,11 @@ def verify_reauth(user_sub: str, challenge: str) -> bool:
         return False
     
     data = _reauth_challenges[user_sub]
-    
-    # Check if challenge matches
-    if data["challenge"] != challenge:
+
+    # Check if challenge matches (timing-safe)
+    if not secrets.compare_digest(str(data["challenge"]), str(challenge)):
         return False
-    
+
     # Check if authenticated
     if data["authenticated_at"] is None:
         return False
@@ -125,6 +125,7 @@ def create_reauth_token(user_sub: str, challenge: str) -> str:
         "challenge": challenge,
         "reauth": True,
         "exp": expires,
+        "iss": settings.local_jwt_issuer,
     }
     return jwt.encode(
         payload,
@@ -148,6 +149,7 @@ def decode_reauth_token(token: str) -> Optional[dict]:
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
+            issuer=settings.local_jwt_issuer,
         )
         if not payload.get("reauth"):
             return None

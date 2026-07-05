@@ -8,16 +8,23 @@ KC_DB_URL_HOST=keycloak_db
 KC_DB_URL_PORT=5432
 KC_DB_URL_DATABASE=keycloak
 KC_DB_USERNAME=keycloak
-KC_DB_PASSWORD=keycloak_db_password
+# Must match POSTGRES_PASSWORD in env.d/keycloak/postgresql.
+KC_DB_PASSWORD=CHANGE_ME_STRONG_DB_PASSWORD
 
 # Bootstrap Admin User (for initial setup)
-# CHANGE THESE IN PRODUCTION!
+# REQUIRED: set a strong password. Do NOT ship admin/admin. Rotate/remove after first login,
+# and never expose the Keycloak admin port publicly.
 KC_BOOTSTRAP_ADMIN_USERNAME=admin
-KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+KC_BOOTSTRAP_ADMIN_PASSWORD=CHANGE_ME_STRONG_ADMIN_PASSWORD
+
+# Start mode: keep start-dev only for local/dev. For production set KC_START_MODE=start,
+# KC_HTTP_ENABLED=false, a real https KC_HOSTNAME, and KC_HOSTNAME_STRICT=true.
+KC_START_MODE=start-dev
 
 # Hostname Configuration (as seen by the browser)
 # If running behind a reverse proxy, set this to: https://your-domain.com
 KC_HOSTNAME=localhost
+# Production: set to false and terminate TLS at the proxy (KC_PROXY_HEADERS below).
 KC_HTTP_ENABLED=true
 
 # If running behind a reverse proxy, uncomment this line

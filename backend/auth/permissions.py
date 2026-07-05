@@ -25,6 +25,38 @@ async def require_system_admin(
     return user
 
 
+async def resolve_db_user(user: UserInfo, session: AsyncSession):
+    """Return the caller's DB User row, or raise 403 if it does not exist."""
+    from ..models import User
+    db_user = await session.scalar(select(User).where(User.oidc_sub == user.sub))
+    if not db_user:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not found")
+    return db_user
+
+
+async def require_network_manage(
+    user: UserInfo, network_id: int, session: AsyncSession
+):
+    """
+    Authorize a node/certificate management action against a specific network.
+
+    Allows network owners and members with manage_nodes; system admins are allowed only
+    with a valid access grant (consistent with network read access). Raises 403 otherwise.
+    Returns the caller's DB User row. Central check for security audit C3/C4.
+    """
+    db_user = await resolve_db_user(user, session)
+    if await check_network_permission(db_user.id, network_id, "manage_nodes", session):
+        return db_user
+    if user.system_role == "system-admin" and await check_access_grant(
+        db_user.id, "network", network_id, session
+    ):
+        return db_user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to manage nodes in this network",
+    )
+
+
 async def check_network_permission(
     user_id: int,
     network_id: int,

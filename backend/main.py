@@ -45,15 +45,13 @@ async def lifespan(app: FastAPI):
     """Application lifespan: init DB on startup."""
     logger.info("Starting %s...", settings.app_name)
     
-    # Warn if dev-token is available
-    if settings.debug or not settings.oidc_issuer_url:
+    # Warn loudly if the unauthenticated dev-token endpoint has been explicitly enabled.
+    if settings.enable_dev_token:
         logger.warning(
-            "⚠️  DEV-TOKEN ENDPOINT ENABLED - Anyone can obtain admin access without authentication!"
+            "⚠️  DEV-TOKEN ENDPOINT ENABLED (NEBULA_COMMANDER_ENABLE_DEV_TOKEN=true) - "
+            "anyone who can reach this server can obtain admin access WITHOUT authentication. "
+            "NEVER enable this on an internet-reachable deployment."
         )
-        if settings.oidc_issuer_url:
-            logger.warning(
-                "⚠️  OIDC is configured but DEBUG=true - this is INSECURE for production!"
-            )
     
     await init_db()
     yield

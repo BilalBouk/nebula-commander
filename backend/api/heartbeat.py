@@ -1,11 +1,11 @@
 """Heartbeat API: nodes report status to update last_seen and status."""
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth.oidc import require_user, UserInfo
+from ..auth.oidc import require_device_token
 from ..database import get_session
 from ..models import Node
 
@@ -15,10 +15,17 @@ router = APIRouter(prefix="/api/nodes", tags=["heartbeat"])
 @router.post("/{node_id}/heartbeat")
 async def node_heartbeat(
     node_id: int,
-    _user: UserInfo = Depends(require_user),
+    token_node_id: int = Depends(require_device_token),
     session: AsyncSession = Depends(get_session),
 ):
-    """Update node last_seen and set status to active. Call periodically from Nebula nodes."""
+    """Update node last_seen and set status to active. Authenticated by the node's own device
+    token; a node may only heartbeat itself (audit: previously any authenticated user could
+    mark any node active)."""
+    if node_id != token_node_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Device token does not match this node",
+        )
     result = await session.execute(select(Node).where(Node.id == node_id))
     node = result.scalar_one_or_none()
     if not node:

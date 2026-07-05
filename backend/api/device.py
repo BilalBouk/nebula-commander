@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.oidc import require_user, require_device_token, UserInfo, create_device_token
+from ..auth.permissions import require_network_manage
 from ..config import settings
 from ..database import get_session
 from ..models import Network, NetworkDNSConfig, Node, EnrollmentCode, User
@@ -61,13 +62,15 @@ async def create_enrollment_code(
     node = result.scalar_one_or_none()
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
+    # AuthZ: only someone who can manage the node's network may mint an enrollment code
+    # for it. Without this, any authenticated user could obtain any node's device token
+    # and download its private key (audit C4).
+    db_user = await require_network_manage(user, node.network_id, session)
     if not node.ip_address:
         raise HTTPException(
             status_code=400,
             detail="Node has no certificate yet. Create a certificate first.",
         )
-    user_result = await session.execute(select(User).where(User.oidc_sub == user.sub))
-    db_user = user_result.scalar_one_or_none()
     code = _random_code().upper()
     expires_at = datetime.utcnow() + timedelta(hours=body.expires_in_hours)
     rec = EnrollmentCode(

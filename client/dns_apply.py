@@ -9,11 +9,35 @@ Windows NRPT testing: nslookup uses the default DNS server directly and bypasses
 To verify split-horizon, use: Resolve-DnsName <host>.nebula.example.com
 or: ping <host>.nebula.example.com (uses system resolver, which respects NRPT).
 """
+import ipaddress
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+
+# The domain and DNS servers below come from the control plane and are written into OS DNS
+# configuration and (on Windows) a PowerShell command. A malicious or compromised control
+# plane could otherwise inject shell commands / config directives (security audit C5), so we
+# accept only strict hostnames and IP addresses.
+_DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)"
+    r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+)
+
+
+def _is_valid_domain(domain: str) -> bool:
+    return bool(_DOMAIN_RE.match((domain or "").strip()))
+
+
+def _is_valid_dns_server(server: str) -> bool:
+    try:
+        ipaddress.ip_address((server or "").strip())
+        return True
+    except ValueError:
+        return False
 
 # When calling systemctl, avoid passing PyInstaller lib path (same as ncclient)
 _SYSTEM_LIBRARY_ENV_STRIP = ("LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "LIBPATH")
@@ -84,6 +108,15 @@ def apply_split_horizon_dns(config_path: str | None = None, config_dict: dict | 
     if not domain or not servers:
         return False
     servers = [s.strip() for s in servers if isinstance(s, str) and s.strip()]
+
+    # Validate server-supplied values before they reach OS DNS config / PowerShell (audit C5).
+    if not _is_valid_domain(domain):
+        print(f"Refusing to apply DNS: invalid domain {domain!r}", file=sys.stderr)
+        return False
+    servers = [s for s in servers if _is_valid_dns_server(s)]
+    if not servers:
+        print("Refusing to apply DNS: no valid DNS server IP addresses", file=sys.stderr)
+        return False
 
     if sys.platform == "win32":
         return _apply_windows(domain, servers)

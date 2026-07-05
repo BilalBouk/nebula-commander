@@ -4,13 +4,14 @@ import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, constr
+from pydantic import BaseModel, constr, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.oidc import require_user, require_device_token, UserInfo
 from ..auth.permissions import check_network_permission
 from ..database import get_session
+from ..utils.validation import validate_domain, is_valid_dns_server, sanitize_dns_label
 from ..models import (
     Network,
     NetworkDNSAlias,
@@ -39,9 +40,28 @@ class DNSConfigResponse(BaseModel):
 
 class DNSConfigUpdate(BaseModel):
     """domain defaults to network name when creating a new config if omitted."""
-    domain: Optional[HostnameLabel | str] = None
+    domain: Optional[str] = None
     enabled: Optional[bool] = None
     upstream_servers: Optional[List[str]] = None
+
+    @field_validator("domain")
+    @classmethod
+    def _validate_domain(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        # Strict DNS domain only — no newlines/quotes/spaces that could inject dnsmasq
+        # directives (audit C5 / dnsmasq config injection).
+        return validate_domain(v)
+
+    @field_validator("upstream_servers")
+    @classmethod
+    def _validate_upstreams(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        for s in v:
+            if not is_valid_dns_server(s):
+                raise ValueError(f"Invalid upstream DNS server: {s!r}")
+        return v
 
 
 class DNSAliasResponse(BaseModel):
@@ -327,6 +347,9 @@ def _build_dnsmasq_config(
     """Build dnsmasq config. Local zone (domain, local=, address=, host-record=) before server=
     so the zone is answered from config; upstream server= last (per nixos-router and dnsmasq docs).
     """
+    # Defense in depth: the domain may originate from an (unvalidated) network name via the
+    # default path, so neutralize anything that isn't a valid DNS label before interpolation.
+    domain = sanitize_dns_label(domain)
     lines: list[str] = []
     if listen_ip:
         lines.append(f"listen-address={listen_ip}")
@@ -365,10 +388,11 @@ def _build_dnsmasq_config(
         fqdn = f"{a.alias}.{domain}"
         lines.append(f"host-record={fqdn},{node.ip_address}")
     lines.append("")
-    # Upstream servers last: used only for queries not in our local zone
+    # Upstream servers last: used only for queries not in our local zone. Only emit
+    # values that are valid IP[/#port] servers so a stored bad value cannot inject config.
     for s in upstream_servers or []:
         s = (s or "").strip()
-        if s:
+        if s and is_valid_dns_server(s):
             lines.append(f"server={s}")
     return "\n".join(lines)
 

@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.oidc import require_user, UserInfo
-from ..auth.permissions import get_user_nodes
+from ..auth.permissions import get_user_nodes, require_network_manage
 from ..config import settings
 from ..database import get_session
 from ..models import Certificate, EnrollmentCode, Network, NetworkConfig, Node, User
@@ -75,6 +75,20 @@ async def _ensure_user_can_access_node(
     node_ids = await get_user_nodes(user, session, network_id=node.network_id)
     if node.id not in node_ids:
         raise HTTPException(status_code=404, detail="Node not found")
+
+
+async def _ensure_user_can_manage_node(
+    user: UserInfo,
+    session: AsyncSession,
+    node: Node,
+) -> None:
+    """
+    Authorize a mutating/CA action on a node. First hide non-visible nodes (404), then
+    require manage_nodes on the node's network (403). Prevents a view-only member from
+    deleting/revoking/re-enrolling nodes (audit: node mutation was gated on view access).
+    """
+    await _ensure_user_can_access_node(user, session, node)
+    await require_network_manage(user, node.network_id, session)
 
 
 @router.get("", response_model=list[NodeResponse])
@@ -281,7 +295,7 @@ async def update_node(
     node = result.scalar_one_or_none()
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
-    await _ensure_user_can_access_node(user, session, node)
+    await _ensure_user_can_manage_node(user, session, node)
 
     original_groups = list(node.groups or [])
     original_is_lighthouse = node.is_lighthouse
@@ -401,7 +415,7 @@ async def delete_node(
     node = result.scalar_one_or_none()
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
-    await _ensure_user_can_access_node(user, session, node)
+    await _ensure_user_can_manage_node(user, session, node)
 
     if node.is_lighthouse:
         count_result = await session.execute(
@@ -465,7 +479,7 @@ async def revoke_node_certificate(
     node = result.scalar_one_or_none()
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
-    await _ensure_user_can_access_node(user, session, node)
+    await _ensure_user_can_manage_node(user, session, node)
 
     # Mark all certificates for this node as revoked
     await session.execute(
@@ -516,7 +530,7 @@ async def reenroll_node(
     node = result.scalar_one_or_none()
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
-    await _ensure_user_can_access_node(user, session, node)
+    await _ensure_user_can_manage_node(user, session, node)
 
     # If node has a certificate, revoke it first (mark certs, release IP, remove files, clear node fields)
     if node.ip_address:

@@ -64,32 +64,55 @@ def _get_signing_key_from_jwks(token: str, issuer_url: str) -> Optional[dict]:
         return None
 
 
+def _accepted_oidc_issuers() -> tuple[str, ...]:
+    """Issuer values accepted on provider (RS256) tokens.
+
+    The backend may fetch JWKS over an internal URL (http://keycloak:8080/...) while
+    browser-issued tokens carry the PUBLIC issuer URL, so both configured URLs are
+    accepted, each with and without a trailing slash (jose compares iss exactly).
+    """
+    issuers: list[str] = []
+    for url in (settings.oidc_public_issuer_url, settings.oidc_issuer_url):
+        if url:
+            issuers.extend((url, url.rstrip("/")))
+    return tuple(dict.fromkeys(issuers))
+
+
 def decode_token(token: str) -> Optional[dict]:
-    """Decode and validate JWT. Uses OIDC JWKS if issuer is set, else JWT secret."""
+    """Decode and validate a JWT.
+
+    When OIDC is configured a token is accepted only if it is either RS-signed by the
+    provider (validated against its JWKS, with audience AND issuer pinned to the
+    configured provider URLs) OR one of OUR own locally-minted HS256 tokens, identified
+    by iss == local_jwt_issuer. We deliberately do NOT fall back to accepting an
+    arbitrary HS256 token as an OIDC identity: without the issuer marker the
+    local-secret path would let anyone who knows the symmetric secret forge a provider user
+    (security audit C1). Local tokens carry our issuer claim, enforced on the HS256 branch.
+    """
     try:
         if settings.oidc_issuer_url:
-            # Try OIDC JWKS validation first (for tokens from Keycloak)
+            # Prefer OIDC JWKS validation (tokens minted by Keycloak/etc.)
             key_data = _get_signing_key_from_jwks(token, settings.oidc_issuer_url)
             if key_data:
-                key = jwk.construct(key_data)
-                payload = jwt.decode(
+                return jwt.decode(
                     token,
-                    key,
+                    jwk.construct(key_data),
                     algorithms=["RS256", "RS384", "RS512"],
                     audience=settings.oidc_client_id,
+                    issuer=_accepted_oidc_issuers(),
                     options={"verify_aud": bool(settings.oidc_client_id)},
                 )
-                return payload
-            # If JWKS validation fails (no kid or key not found), fall back to local JWT secret
-            # This allows our own JWTs (created in /callback) to work alongside OIDC
+            # Not IdP-signed: the only other thing we accept is our own locally-minted
+            # token, which must be stamped with our issuer (enforced just below).
         
-        # Validate using local JWT secret
-        payload = jwt.decode(
+        # Validate using local JWT secret; require our issuer claim so a forged token
+        # cannot masquerade as an OIDC identity or a different token type.
+        return jwt.decode(
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
+            issuer=settings.local_jwt_issuer,
         )
-        return payload
     except JWTError:
         return None
 
@@ -149,7 +172,13 @@ def create_device_token(node_id: int, version: int) -> str:
     Payload: sub=device, node_id=N, ver=version
     """
     exp = datetime.utcnow() + timedelta(days=settings.device_token_expiration_days)
-    payload = {"sub": "device", "node_id": node_id, "ver": version, "exp": exp}
+    payload = {
+        "sub": "device",
+        "node_id": node_id,
+        "ver": version,
+        "exp": exp,
+        "iss": settings.local_jwt_issuer,
+    }
     return jwt.encode(
         payload,
         settings.jwt_secret_key,
@@ -164,6 +193,7 @@ def decode_device_token(token: str) -> Optional[tuple[int, int]]:
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
+            issuer=settings.local_jwt_issuer,
         )
         if payload.get("sub") != "device":
             return None

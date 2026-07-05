@@ -111,15 +111,15 @@ async def dev_token(
     session: AsyncSession = Depends(get_session),
 ):
     """
-    Return a JWT for development when debug is enabled or when OIDC is not configured.
-    When OIDC is not set, this allows the UI to work in standalone/Docker mode.
-    No authentication required. Disabled in production when OIDC is configured.
-    
-    WARNING: This endpoint grants full admin access without authentication.
-    Only use in development or when OIDC is not configured.
+    Return an unauthenticated system-admin JWT for local development only.
+
+    WARNING: This endpoint grants full admin access without authentication. It is disabled
+    unless NEBULA_COMMANDER_ENABLE_DEV_TOKEN is explicitly set to true, and must NEVER be
+    enabled on an internet-reachable deployment. It is intentionally decoupled from
+    "OIDC not configured" (security audit C2) so a half-configured server does not silently
+    expose it.
     """
-    # Allow when debug is on, or when no OIDC (standalone mode)
-    if not settings.debug and settings.oidc_issuer_url:
+    if not settings.enable_dev_token:
         raise HTTPException(status_code=404, detail="Not found")
     
     # Log warning when dev-token is accessed
@@ -136,6 +136,7 @@ async def dev_token(
         "role": "system-admin",
         "system_role": "system-admin",
         "exp": expires,
+        "iss": settings.local_jwt_issuer,
     }
     token = jwt.encode(
         payload,
@@ -259,8 +260,9 @@ async def callback(request: Request, session: AsyncSession = Depends(get_session
             "role": system_role,  # Legacy field for backward compatibility
             "system_role": system_role,
             "exp": expires,
+            "iss": settings.local_jwt_issuer,
         }
-        
+
         our_token = jwt.encode(
             payload,
             settings.jwt_secret_key,

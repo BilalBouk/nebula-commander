@@ -4,18 +4,20 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth.oidc import require_user, UserInfo
+from ..auth.permissions import require_network_manage, get_user_networks
 from ..config import settings
 from ..database import get_session
 from pathlib import Path
-from ..models import Network, Node, Certificate, User
+from ..models import Network, Node, Certificate
 from ..services.audit import get_client_ip, log_audit
 from ..services.cert_store import read_cert_store_file
 from ..services.cert_manager import CertManager
 from ..services.ip_allocator import IPAllocator
+from ..utils.validation import validate_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,13 @@ class SignRequest(BaseModel):
     group: Optional[str] = None
     suggested_ip: Optional[str] = None
     duration_days: Optional[int] = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        # Node name becomes a nebula-cert -name arg and a cert-store filename; keep it a
+        # strict hostname so it cannot traverse paths or inject arguments (audit).
+        return validate_hostname(v)
 
 
 class SignResponse(BaseModel):
@@ -52,6 +61,11 @@ class CreateRequest(BaseModel):
     public_endpoint: Optional[str] = None
     lighthouse_options: Optional[dict[str, Any]] = None  # interval_seconds; DNS is via ncclient dnsmasq only
     punchy_options: Optional[dict[str, Any]] = None  # respond, delay, respond_delay
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        return validate_hostname(v)
 
 
 class CreateResponse(BaseModel):
@@ -92,6 +106,9 @@ async def sign_certificate(
     network = result.scalar_one_or_none()
     if not network:
         raise HTTPException(status_code=404, detail="Network not found")
+
+    # AuthZ: caller must be able to manage nodes in this network (audit C3).
+    db_user = await require_network_manage(user, body.network_id, session)
 
     cert_manager = CertManager(session)
     duration = body.duration_days or settings.default_cert_expiry_days
@@ -138,14 +155,12 @@ async def sign_certificate(
     )
     session.add(cert_record)
     await session.flush()
-    user_result = await session.execute(select(User).where(User.oidc_sub == user.sub))
-    db_user = user_result.scalar_one_or_none()
     await log_audit(
         session,
         "cert_signed",
         resource_type="node",
         resource_id=node.id,
-        actor_user_id=db_user.id if db_user else None,
+        actor_user_id=db_user.id,
         actor_identifier=user.email or user.sub,
         client_ip=get_client_ip(request),
     )
@@ -186,6 +201,9 @@ async def create_certificate(
     network = result.scalar_one_or_none()
     if not network:
         raise HTTPException(status_code=404, detail="Network not found")
+
+    # AuthZ: caller must be able to manage nodes in this network (audit C3).
+    db_user = await require_network_manage(user, body.network_id, session)
 
     # First node in network must be a lighthouse
     count_result = await session.execute(
@@ -261,14 +279,12 @@ async def create_certificate(
     )
     session.add(cert_record)
     await session.flush()
-    user_result = await session.execute(select(User).where(User.oidc_sub == user.sub))
-    db_user = user_result.scalar_one_or_none()
     await log_audit(
         session,
         "node_created",
         resource_type="node",
         resource_id=node.id,
-        actor_user_id=db_user.id if db_user else None,
+        actor_user_id=db_user.id,
         actor_identifier=user.email or user.sub,
         client_ip=get_client_ip(request),
     )
@@ -285,16 +301,22 @@ async def create_certificate(
 
 @router.get("", response_model=list[CertificateListItem])
 async def list_certificates(
-    _user: UserInfo = Depends(require_user),
+    user: UserInfo = Depends(require_user),
     session: AsyncSession = Depends(get_session),
     network_id: Optional[int] = Query(None, description="Filter by network"),
 ):
-    """List issued certificates, optionally filtered by network."""
+    """List issued certificates. Non-admins see only certificates in networks they belong to
+    (audit: previously every authenticated user saw all networks' certs)."""
     stmt = (
         select(Certificate, Node, Network)
         .join(Node, Certificate.node_id == Node.id)
         .join(Network, Node.network_id == Network.id)
     )
+    if user.system_role != "system-admin":
+        allowed_network_ids = await get_user_networks(user, session)
+        if not allowed_network_ids:
+            return []
+        stmt = stmt.where(Network.id.in_(allowed_network_ids))
     if network_id is not None:
         stmt = stmt.where(Network.id == network_id)
     stmt = stmt.order_by(Certificate.issued_at.desc())

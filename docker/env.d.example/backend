@@ -20,8 +20,8 @@ NEBULA_COMMANDER_CERT_STORE_PATH=/var/lib/nebula-commander/certs
 
 # JWT secret key for signing tokens
 # ⚠️  CRITICAL: Generate a secure random key for production!
-# Use: openssl rand -base64 32
-# DO NOT use this example value in production!
+# Use: openssl rand -base64 48
+# The backend now REFUSES TO START if this is missing, a known placeholder, or < 32 chars.
 NEBULA_COMMANDER_JWT_SECRET_KEY=CHANGE_ME_GENERATE_RANDOM_32_CHARS_MIN
 
 # Alternative: Use a secret file (more secure)
@@ -163,7 +163,14 @@ NEBULA_COMMANDER_SMTP_FROM_NAME=Nebula Commander
 # Debug Mode
 # =============================================================================
 
-# Enable debug mode (enables /dev-token endpoint)
-# WARNING: Never enable in production!
+# Enable debug mode (verbose logging, autoreload). Does NOT enable the dev-token endpoint.
 NEBULA_COMMANDER_DEBUG=false
+
+# =============================================================================
+# Dev token (UNAUTHENTICATED ADMIN ACCESS) — local development ONLY
+# =============================================================================
+# When true, GET /api/auth/dev-token returns a system-admin JWT with NO authentication.
+# It is independent of DEBUG and of OIDC configuration. Leave false on any deployment that
+# is reachable from anything but localhost.
+NEBULA_COMMANDER_ENABLE_DEV_TOKEN=false
 
