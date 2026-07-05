@@ -124,6 +124,9 @@ class Certificate(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     cert_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # Nebula cert fingerprint, captured at sign time. Kept even after the cert files are
+    # deleted on revoke so a revoked-but-unexpired cert can be published in pki.blocklist.
+    fingerprint: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     node: Mapped["Node"] = relationship("Node", back_populates="certificates")
 
@@ -175,7 +178,9 @@ class EnrollmentCode(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     node_id: Mapped[int] = mapped_column(ForeignKey("nodes.id"), nullable=False)
-    code: Mapped[str] = mapped_column(EncryptedText(), unique=True, nullable=False)
+    # Stores the deterministic keyed hash of the code (encryption.deterministic_hash), never
+    # the plaintext. The plaintext is shown once at creation and looked up by re-hashing.
+    code: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -358,7 +363,10 @@ class Invitation(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     network_id: Mapped[int] = mapped_column(ForeignKey("networks.id"), nullable=False)
     invited_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    token: Mapped[str] = mapped_column(EncryptedText(), unique=True, nullable=False)
+    # token holds the encrypted value (read back for copy-link / resend). token_hash holds the
+    # deterministic keyed hash used for lookups (Fernet ciphertext can't be searched by value).
+    token: Mapped[str] = mapped_column(EncryptedText(), nullable=False)
+    token_hash: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False)  # owner, member
     can_manage_nodes: Mapped[bool] = mapped_column(Boolean, default=False)
     can_invite_users: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -17,7 +17,8 @@ from ..services.audit import get_client_ip, log_audit
 from ..services.cert_store import read_cert_store_file
 from ..services.cert_manager import CertManager
 from ..services.ip_allocator import IPAllocator
-from ..utils.validation import validate_hostname
+from ..utils.validation import validate_hostname, validate_group, validate_endpoint
+from ..utils.nebula_cert import cert_fingerprint_from_pem
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,13 @@ class SignRequest(BaseModel):
         # Node name becomes a nebula-cert -name arg and a cert-store filename; keep it a
         # strict hostname so it cannot traverse paths or inject arguments (audit).
         return validate_hostname(v)
+
+    @field_validator("group")
+    @classmethod
+    def _validate_group(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v.strip() == "":
+            return v
+        return validate_group(v)
 
 
 class SignResponse(BaseModel):
@@ -66,6 +74,20 @@ class CreateRequest(BaseModel):
     @classmethod
     def _validate_name(cls, v: str) -> str:
         return validate_hostname(v)
+
+    @field_validator("group")
+    @classmethod
+    def _validate_group(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v.strip() == "":
+            return v
+        return validate_group(v)
+
+    @field_validator("public_endpoint")
+    @classmethod
+    def _validate_public_endpoint(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v.strip() == "":
+            return v
+        return validate_endpoint(v)
 
 
 class CreateResponse(BaseModel):
@@ -152,6 +174,7 @@ async def sign_certificate(
         node_id=node.id,
         expires_at=expires_at,
         cert_path=None,
+        fingerprint=cert_fingerprint_from_pem(cert_pem),
     )
     session.add(cert_record)
     await session.flush()
@@ -276,6 +299,7 @@ async def create_certificate(
         node_id=node.id,
         expires_at=expires_at,
         cert_path=None,
+        fingerprint=cert_fingerprint_from_pem(cert_pem),
     )
     session.add(cert_record)
     await session.flush()

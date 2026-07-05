@@ -12,7 +12,7 @@ from ..auth.permissions import check_network_permission
 from ..database import get_session
 from ..models import NodeRequest, Network, User, NetworkPermission, NetworkSettings, Node
 from ..services.audit import get_client_ip, log_audit
-from ..utils.validation import validate_hostname
+from ..utils.validation import validate_hostname, validate_group
 
 router = APIRouter(prefix="/api/node-requests", tags=["node-requests"])
 
@@ -28,6 +28,11 @@ class NodeRequestCreate(BaseModel):
     @classmethod
     def _validate_hostname(cls, v: str) -> str:
         return validate_hostname(v)
+
+    @field_validator("groups")
+    @classmethod
+    def _validate_groups(cls, v: List[str]) -> List[str]:
+        return [validate_group(g) for g in (v or []) if g and g.strip()]
 
 
 class NodeRequestResponse(BaseModel):
@@ -91,6 +96,15 @@ async def create_node_request(
         )
     )
     is_member = member_result.scalar_one_or_none() is not None
+
+    # A non-member must not be able to inject node-requests into an arbitrary network's queue
+    # (spam / attacker-chosen hostname a manager might approve). Only members (or system
+    # admins) may create a request at all (audit MED-1).
+    if not is_member and user.system_role != "system-admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of this network",
+        )
 
     # Check network settings for auto-approve
     settings_result = await session.execute(

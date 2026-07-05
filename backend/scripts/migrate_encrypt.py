@@ -67,27 +67,47 @@ def migrate_db(settings):
     if n:
         print(f"Encrypted {n} node(s) public_key")
 
-    # enrollment_codes.code
+    # enrollment_codes.code -> deterministic keyed hash (looked up by value, never read back).
+    # A 64-hex-char value is already a hash; anything else is a legacy plaintext code to hash.
+    from backend.services.encryption import deterministic_hash
     cur.execute("SELECT id, code FROM enrollment_codes")
     n = 0
     for row in cur.fetchall():
-        val = row["code"]
-        if not _is_encrypted(val):
-            cur.execute("UPDATE enrollment_codes SET code = ? WHERE id = ?", (encrypt_to_str(val), row["id"]))
+        val = row["code"] or ""
+        already_hashed = len(val) == 64 and all(c in "0123456789abcdef" for c in val)
+        if not already_hashed:
+            cur.execute(
+                "UPDATE enrollment_codes SET code = ? WHERE id = ?",
+                (deterministic_hash(val.strip().upper()), row["id"]),
+            )
             n += 1
     if n:
-        print(f"Encrypted {n} enrollment_code(s)")
+        print(f"Hashed {n} enrollment_code(s)")
 
-    # invitations.token
-    cur.execute("SELECT id, token FROM invitations")
+    # invitations.token -> encrypt the value (for read-back) and populate token_hash (lookup).
+    cur.execute("PRAGMA table_info(invitations)")
+    inv_cols = {r[1] for r in cur.fetchall()}
+    if "token_hash" not in inv_cols:
+        cur.execute("ALTER TABLE invitations ADD COLUMN token_hash VARCHAR(128)")
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_invitations_token_hash ON invitations (token_hash)"
+        )
+    cur.execute("SELECT id, token, token_hash FROM invitations")
     n = 0
     for row in cur.fetchall():
         val = row["token"]
-        if not _is_encrypted(val):
-            cur.execute("UPDATE invitations SET token = ? WHERE id = ?", (encrypt_to_str(val), row["id"]))
-            n += 1
+        if val is None:
+            continue
+        if _is_encrypted(val):
+            continue  # already migrated (token_hash set on prior run)
+        # val is plaintext here: hash the plaintext for lookup, then store the encrypted value.
+        cur.execute(
+            "UPDATE invitations SET token = ?, token_hash = ? WHERE id = ?",
+            (encrypt_to_str(val), deterministic_hash(val), row["id"]),
+        )
+        n += 1
     if n:
-        print(f"Encrypted {n} invitation(s) token")
+        print(f"Encrypted+hashed {n} invitation(s) token")
 
     # network_configs.config_yaml
     cur.execute("SELECT id, config_yaml FROM network_configs")

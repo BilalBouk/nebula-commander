@@ -50,15 +50,20 @@ class EncryptedText(TypeDecorator):
     """
     Stores encrypted string in DB (base64 of magic+Fernet token).
     Transparent encrypt on bind, decrypt on result.
-    All writes to columns using this type must go through the ORM so process_bind_parameter
+    All writes to columns using this type must go through the ORM so process_bind_param
     runs; raw SQL that inserts/updates these columns must use encrypt_to_str() from
     backend.services.encryption (e.g. migrate_encrypt.py).
+
+    NOTE: this type does NOT support lookup by value (Fernet is non-deterministic, so
+    WHERE col == plaintext never matches). Columns that must be looked up by their secret
+    value (enrollment codes, invite tokens) use a deterministic keyed hash instead — see
+    encryption.deterministic_hash.
     """
 
     impl = Text
     cache_ok = True
 
-    def process_bind_parameter(self, value, dialect):
+    def process_bind_param(self, value, dialect):
         if value is None:
             return None
         from .services.encryption import encrypt_to_str
@@ -328,6 +333,28 @@ def _run_sqlite_migrations() -> None:
                 "ALTER TABLE nodes ADD COLUMN device_token_version INTEGER DEFAULT 1"
             )
             logger.info("Migration: added column nodes.device_token_version")
+
+        # Add fingerprint column to certificates table (for pki.blocklist revocation)
+        cur.execute("PRAGMA table_info(certificates)")
+        cert_columns = {row[1] for row in cur.fetchall()}
+        if "fingerprint" not in cert_columns:
+            cur.execute("ALTER TABLE certificates ADD COLUMN fingerprint VARCHAR(128)")
+            logger.info("Migration: added column certificates.fingerprint")
+
+        # Add token_hash column to invitations (deterministic lookup for the now-encrypted token)
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='invitations'"
+        )
+        if cur.fetchone() is not None:
+            cur.execute("PRAGMA table_info(invitations)")
+            inv_columns = {row[1] for row in cur.fetchall()}
+            if "token_hash" not in inv_columns:
+                cur.execute("ALTER TABLE invitations ADD COLUMN token_hash VARCHAR(128)")
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_invitations_token_hash "
+                    "ON invitations (token_hash)"
+                )
+                logger.info("Migration: added column invitations.token_hash")
 
         # Add upstream_servers to network_dns_configs
         cur.execute(

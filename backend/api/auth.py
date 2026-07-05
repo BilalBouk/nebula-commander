@@ -291,11 +291,13 @@ async def callback(request: Request, session: AsyncSession = Depends(get_session
         )
         await session.commit()
         
-        # Redirect to frontend with token in URL query params
-        # Use validated redirect URL to prevent open redirect attacks
+        # Deliver the token in the URL fragment (#), never the query string: fragments are not
+        # sent to the server, so they never land in reverse-proxy access logs or the Referer
+        # header on later navigations (security audit). The SPA reads and clears it immediately.
+        # Use validated redirect URL to prevent open redirect attacks.
         frontend_url = get_safe_redirect_url(request)
-        redirect_url = f"{frontend_url}/auth/callback?token={our_token}"
-        
+        redirect_url = f"{frontend_url}/auth/callback#token={our_token}"
+
         return RedirectResponse(url=redirect_url)
         
     except Exception as e:
@@ -424,7 +426,7 @@ async def reauth_callback(request: Request):
         mark_reauth_completed("dev", challenge)
         token = create_reauth_token("dev", challenge)
         frontend_url = get_safe_redirect_url(request)
-        return RedirectResponse(url=f"{frontend_url}/reauth/complete?token={token}")
+        return RedirectResponse(url=f"{frontend_url}/reauth/complete#token={token}")
 
     code = request.query_params.get("code")
     if not code:
@@ -487,4 +489,4 @@ async def reauth_callback(request: Request):
 
     reauth_token = create_reauth_token(user_sub, challenge)
     frontend_url = get_safe_redirect_url(request)
-    return RedirectResponse(url=f"{frontend_url}/reauth/complete?token={reauth_token}")
+    return RedirectResponse(url=f"{frontend_url}/reauth/complete#token={reauth_token}")

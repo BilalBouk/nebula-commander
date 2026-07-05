@@ -2,6 +2,7 @@
 Generate Nebula YAML config for a node from Node + Network + peer nodes.
 """
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -10,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
-from ..models import Network, Node, NetworkGroupFirewall
+from ..models import Certificate, Network, Node, NetworkGroupFirewall
 
 logger = logging.getLogger(__name__)
 
@@ -227,11 +228,14 @@ def build_config(
     peer_nodes: list[Node],
     group_firewalls: list[Any],
     inline_pki: Optional[tuple[str, str, str]] = None,
+    blocklist: Optional[list[str]] = None,
 ) -> str:
     """
     Build Nebula YAML config for the given node.
     peer_nodes: all other nodes in the same network (for lighthouses list and static_host_map).
     inline_pki: optional (ca_pem, cert_pem, key_pem) to embed certs in config (OS-independent; no file paths).
+    blocklist: optional list of revoked cert fingerprints to publish as pki.blocklist so every
+      node refuses the revoked certs (Nebula's only revocation mechanism).
     """
     # Lighthouses and relays with public_endpoint (for static_host_map)
     hosts_with_endpoint = [
@@ -259,6 +263,12 @@ def build_config(
         }
     else:
         pki_section = _default_pki()
+
+    # Publish revoked (non-expired) cert fingerprints so every node rejects them. This is
+    # Nebula's only working revocation path; without it a revoked node keeps mesh access
+    # until its cert naturally expires.
+    if blocklist:
+        pki_section["blocklist"] = list(blocklist)
 
     config: dict[str, Any] = {
         "pki": pki_section,
@@ -313,4 +323,19 @@ async def generate_config_for_node(
     )
     group_firewalls = list(result.scalars().all())
 
-    return build_config(node, network, peer_nodes, group_firewalls, inline_pki=inline_pki)
+    # Revoked-but-not-yet-expired cert fingerprints for this network -> pki.blocklist.
+    result = await session.execute(
+        select(Certificate.fingerprint)
+        .join(Node, Certificate.node_id == Node.id)
+        .where(
+            Node.network_id == node.network_id,
+            Certificate.revoked_at.is_not(None),
+            Certificate.expires_at > datetime.utcnow(),
+            Certificate.fingerprint.is_not(None),
+        )
+    )
+    blocklist = [row[0] for row in result.all()]
+
+    return build_config(
+        node, network, peer_nodes, group_firewalls, inline_pki=inline_pki, blocklist=blocklist
+    )

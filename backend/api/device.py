@@ -22,6 +22,7 @@ from ..config import settings
 from ..database import get_session
 from ..models import Network, NetworkDNSConfig, Node, EnrollmentCode, User
 from ..services.audit import get_client_ip, log_audit
+from ..services.encryption import deterministic_hash
 from ..api.dns import get_dnsmasq_config_for_node
 from ..services.cert_store import read_cert_store_file
 from ..services.config_generator import generate_config_for_node
@@ -75,7 +76,7 @@ async def create_enrollment_code(
     expires_at = datetime.utcnow() + timedelta(hours=body.expires_in_hours)
     rec = EnrollmentCode(
         node_id=node.id,
-        code=code,
+        code=deterministic_hash(code),  # store only the keyed hash; plaintext shown once below
         expires_at=expires_at,
     )
     session.add(rec)
@@ -125,7 +126,7 @@ async def enroll(
     if not code:
         raise HTTPException(status_code=400, detail="Code is required")
     result = await session.execute(
-        select(EnrollmentCode).where(EnrollmentCode.code == code)
+        select(EnrollmentCode).where(EnrollmentCode.code == deterministic_hash(code))
     )
     rec = result.scalar_one_or_none()
     if not rec:

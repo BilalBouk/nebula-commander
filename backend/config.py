@@ -82,6 +82,12 @@ class Settings(BaseSettings):
 
     # Session security
     session_https_only: bool = False  # Set to True in production with HTTPS
+
+    # Number of trusted reverse proxies in front of the app. X-Forwarded-For is only honored
+    # this many hops from the right (each trusted proxy appends the address it saw), so a client
+    # cannot spoof its source IP by sending its own X-Forwarded-For. Default 1 (the bundled
+    # nginx). Set to 0 if the app is exposed directly with no proxy (then XFF is ignored).
+    trusted_proxy_count: int = 1
     
     # Redirect security - allowed hosts for OAuth/OIDC redirects
     # Prevents open redirect vulnerabilities by validating redirect URLs

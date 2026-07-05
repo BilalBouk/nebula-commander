@@ -6,6 +6,8 @@ from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 import logging
 
+from ..services.audit import get_client_ip
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,9 +41,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # Public invitation preview: protect against brute-forcing invitation tokens
             "/api/invitations/public": (30, 3600),  # 30 requests per hour per IP
         }
+        # Bound memory: periodically drop keys whose window has fully elapsed, so an attacker
+        # rotating client identifiers cannot grow this dict without limit.
+        self._max_window = max((w for _, w in self.limits.values()), default=3600)
+        self._gc_counter = 0
+
+    def _sweep(self, now: float) -> None:
+        for k in list(self.requests.keys()):
+            recent = [ts for ts in self.requests[k] if now - ts < self._max_window]
+            if recent:
+                self.requests[k] = recent
+            else:
+                del self.requests[k]
     
     async def dispatch(self, request: Request, call_next):
         """Check rate limit before processing request."""
+        self._gc_counter += 1
+        if self._gc_counter % 1000 == 0:
+            self._sweep(time.time())
+
         path = request.url.path
         
         # Check if this path needs rate limiting
@@ -72,9 +90,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 if auth_header:
                     client_id = auth_header
                 else:
-                    client_id = request.client.host if request.client else "unknown"
+                    client_id = get_client_ip(request) or "unknown"
             else:
-                client_id = request.client.host if request.client else "unknown"
+                # Trusted-proxy-aware client IP so per-IP limits are not collapsed onto the
+                # proxy's address (behind nginx every request would otherwise share one bucket),
+                # and cannot be bypassed by spoofing X-Forwarded-For.
+                client_id = get_client_ip(request) or "unknown"
 
             key = (client_id, endpoint_id)
             

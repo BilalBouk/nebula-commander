@@ -14,6 +14,7 @@ from ..database import get_session
 from ..models import Invitation, User, Network, NetworkPermission
 from ..services.audit import get_client_ip, log_audit
 from ..services.email import send_invitation_email
+from ..services.encryption import deterministic_hash
 from ..config import settings
 
 router = APIRouter(prefix="/api/invitations", tags=["invitations"])
@@ -146,6 +147,7 @@ async def create_invitation(
         network_id=body.network_id,
         invited_by_user_id=db_user.id,
         token=token,
+        token_hash=deterministic_hash(token),
         role=body.role,
         can_manage_nodes=body.can_manage_nodes,
         can_invite_users=body.can_invite_users,
@@ -315,7 +317,7 @@ async def get_invitation_public(
     Used to display invitation details before accepting.
     """
     # Get invitation
-    result = await session.execute(select(Invitation).where(Invitation.token == token))
+    result = await session.execute(select(Invitation).where(Invitation.token_hash == deterministic_hash(token)))
     invitation = result.scalar_one_or_none()
     
     if not invitation:
@@ -375,7 +377,7 @@ async def accept_invitation(
         )
     
     # Get invitation
-    result = await session.execute(select(Invitation).where(Invitation.token == token))
+    result = await session.execute(select(Invitation).where(Invitation.token_hash == deterministic_hash(token)))
     invitation = result.scalar_one_or_none()
     
     if not invitation:

@@ -13,10 +13,20 @@ from ..models.db import AuditLog
 
 
 def get_client_ip(request: Request) -> str:
-    """Get client IP from request, honoring X-Forwarded-For when behind a proxy."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """
+    Get the client IP, honoring X-Forwarded-For only for the configured number of trusted
+    proxies. Each trusted proxy appends the address it received the connection from, so the
+    real client is the entry `trusted_proxy_count` from the right — NOT the leftmost, which is
+    fully attacker-controlled. With trusted_proxy_count=0, XFF is ignored entirely (direct
+    exposure). This prevents spoofing the logged/rate-limited source IP via a forged header.
+    """
+    from ..config import settings
+
+    n = settings.trusted_proxy_count
+    if n and n > 0:
+        parts = [p.strip() for p in (request.headers.get("X-Forwarded-For") or "").split(",") if p.strip()]
+        if len(parts) >= n:
+            return parts[-n]
     if request.client:
         return request.client.host
     return ""

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..models import Network, Node, Certificate, AllocatedIP
-from ..utils.nebula_cert import _check_path_under_roots, ca_generate, cert_sign, keygen
+from ..utils.nebula_cert import _check_path_under_roots, ca_generate, cert_fingerprint_from_pem, cert_sign, keygen
 from .cert_store import read_cert_store_file, write_cert_store_file
 from .ip_allocator import IPAllocator
 
@@ -249,6 +249,7 @@ class CertManager:
             node_id=node.id,
             expires_at=expires_at,
             cert_path=None,
+            fingerprint=cert_fingerprint_from_pem(cert_pem),
         )
         self.session.add(cert_record)
         await self.session.flush()

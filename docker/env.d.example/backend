@@ -91,7 +91,8 @@ NEBULA_COMMANDER_OIDC_SCOPES=openid profile email
 # =============================================================================
 
 # Allowed CORS origins (comma-separated). Include your public app URL (FQDN or host:port).
-# ⚠️  SECURITY WARNING: Using '*' with credentials is insecure!
+# ⚠️  The backend now REFUSES TO START if this resolves to '*' unless DEBUG=true, because
+# '*' combined with credentials is both rejected by browsers and unsafe.
 # Example: https://nebula.example.com  or  http://192.168.1.1:9091
 NEBULA_COMMANDER_CORS_ORIGINS=https://nebula.example.com
 
@@ -99,9 +100,16 @@ NEBULA_COMMANDER_CORS_ORIGINS=https://nebula.example.com
 # Session Security
 # =============================================================================
 
-# Set session cookie to HTTPS-only (recommended for production)
-# Set to true when using HTTPS, false for local development over HTTP
+# Force the session cookie to HTTPS-only. When unset/false, it is still auto-enabled if
+# NEBULA_COMMANDER_PUBLIC_URL is an https:// URL. Set true explicitly for production; leave
+# false only for local development over plain HTTP.
 NEBULA_COMMANDER_SESSION_HTTPS_ONLY=false
+
+# Number of trusted reverse proxies in front of the app. X-Forwarded-For is honored only this
+# many hops from the right, so clients cannot spoof their source IP (used for audit logs and
+# rate limiting). Default 1 (the bundled frontend nginx). Set 0 if the API is exposed directly
+# with no proxy; increase if you add another proxy/CDN in front.
+NEBULA_COMMANDER_TRUSTED_PROXY_COUNT=1
 
 # =============================================================================
 # Redirect Security

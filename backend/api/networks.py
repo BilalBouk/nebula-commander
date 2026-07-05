@@ -4,7 +4,7 @@ import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,7 @@ from ..database import get_session
 from ..models import Network, NetworkDNSConfig, NetworkGroupFirewall, NetworkPermission, NetworkSettings, User
 from ..services.audit import get_client_ip, log_audit
 from ..services.ip_allocator import IPAllocator
+from ..utils.validation import validate_hostname, validate_subnet_cidr
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,19 @@ router = APIRouter(prefix="/api/networks", tags=["networks"])
 class NetworkCreate(BaseModel):
     name: str
     subnet_cidr: str
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        # Network name becomes the CA's nebula-cert -name argument; keep it a strict hostname
+        # label so it cannot inject args or break CA creation later (audit).
+        return validate_hostname(v)
+
+    @field_validator("subnet_cidr")
+    @classmethod
+    def _validate_subnet(cls, v: str) -> str:
+        # Reject malformed CIDRs at network-create time instead of 500-ing on first cert (audit).
+        return validate_subnet_cidr(v)
 
 
 class NetworkResponse(BaseModel):
@@ -52,6 +66,13 @@ class NetworkListResponse(NetworkResponse):
 class NetworkUpdate(BaseModel):
     """No network-level firewall (defined.net style: only per-group inbound rules)."""
     name: Optional[str] = None  # If set, must be unique across all networks
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        return validate_hostname(v)
 
 
 @router.get("", response_model=list[NetworkListResponse])

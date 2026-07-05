@@ -3,6 +3,7 @@ Nebula Commander - self-hosted Nebula control plane.
 
 Copyright (c) 2025 NixRTR. MIT License. See LICENSE in the repo root.
 """
+import hashlib
 import logging
 import os
 import sys
@@ -60,41 +61,63 @@ async def lifespan(app: FastAPI):
 
 VERSION = os.getenv("VERSION", "0.1.8")
 
+# API docs (OpenAPI/Swagger) enumerate the whole API surface; only expose them in debug.
+_docs_url = "/api/docs" if settings.debug else None
+_redoc_url = "/api/redoc" if settings.debug else None
+
 app = FastAPI(
     title=settings.app_name,
     version=VERSION,
     description="Self-hosted Nebula control plane",
     lifespan=lifespan,
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
+    docs_url=_docs_url,
+    redoc_url=_redoc_url,
+    openapi_url="/api/openapi.json" if settings.debug else None,
 )
 
 # Rate limiting middleware (applied first to catch attacks early)
 app.add_middleware(RateLimitMiddleware)
 
+# Secure the session cookie whenever TLS is in play: explicitly opted in, or the public URL is
+# https (production behind a TLS proxy). Local http dev keeps working (flag stays False).
+_session_https_only = settings.session_https_only or (settings.public_url or "").lower().startswith("https://")
+
+# Domain-separate the session-cookie signing key from the JWT secret so one is not trivially
+# derivable from the other (audit MED-3). Still deterministic from the single configured secret.
+_session_secret = hashlib.sha256(f"session-cookie:{settings.jwt_secret_key}".encode()).hexdigest()
+
 # Session middleware (required for OAuth)
 app.add_middleware(
     SessionMiddleware,
-    secret_key=settings.jwt_secret_key,  # Use same secret as JWT
+    secret_key=_session_secret,
     session_cookie="nebula_session",
     max_age=3600,  # 1 hour
     same_site="lax",
-    https_only=settings.session_https_only,
+    https_only=_session_https_only,
 )
+
+# CORS: a wildcard origin combined with credentials is both rejected by browsers and unsafe.
+# Fail closed in production; only tolerate the wildcard (without credentials) in debug.
+_cors_allow_credentials = True
+if "*" in settings.cors_origins:
+    if not settings.debug:
+        raise SystemExit(
+            "Insecure CORS: NEBULA_COMMANDER_CORS_ORIGINS resolves to '*' (all origins) while "
+            "credentials are enabled. Set it to an explicit comma-separated list of trusted "
+            "origins (e.g. https://nebula.example.com) for any internet-reachable deployment."
+        )
+    logger.warning(
+        "⚠️  CORS allows ALL origins (*); disabling credentialed CORS. Debug/local use only."
+    )
+    _cors_allow_credentials = False
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Warn if CORS is set to allow all origins with credentials
-if "*" in settings.cors_origins:
-    logger.warning(
-        "⚠️  CORS is set to allow ALL origins (*) with credentials - this is INSECURE for production!"
-    )
 
 app.include_router(auth.router)
 app.include_router(heartbeat.router)

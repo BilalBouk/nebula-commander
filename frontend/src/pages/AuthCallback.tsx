@@ -1,27 +1,40 @@
 import React, { useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+
+/** Read `#token=...` from the URL fragment and strip it from the address bar / history. */
+function consumeTokenFromHash(): string | null {
+  const hash = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  const token = new URLSearchParams(hash).get('token');
+  if (token) {
+    // Remove the fragment so the token is not left in the address bar or browser history.
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+  return token;
+}
 
 const AuthCallback: React.FC = () => {
   const { setToken } = useAuth();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
 
   useEffect(() => {
-    // Get token from URL query params (set by backend redirect)
-    const token = searchParams.get('token');
-    
+    // The backend delivers the token in the URL fragment (#token=), which browsers never send
+    // to the server (no access-log / Referer leak). Read and clear it immediately.
+    const token = consumeTokenFromHash();
+
     if (token) {
       // Store token and update auth state
       setToken(token);
-      
+
       // Redirect to home
       navigate('/', { replace: true });
     } else {
       // No token, redirect to login with error
       navigate('/login?error=no_token', { replace: true });
     }
-  }, [searchParams, setToken, navigate]);
+  }, [setToken, navigate]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-900">

@@ -7,6 +7,18 @@ const API_BASE = "/api";
 
 const PENDING_DELETE_KEY = "nebula_commander_pending_network_delete";
 
+/** Read `#token=...` from the URL fragment and strip it from the address bar / history. */
+function consumeTokenFromHash(): string | null {
+  const hash = window.location.hash.startsWith("#")
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  const token = new URLSearchParams(hash).get("token");
+  if (token) {
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }
+  return token;
+}
+
 export interface PendingNetworkDelete {
   networkId: number;
   networkName: string;
@@ -39,7 +51,9 @@ export function clearPendingNetworkDelete(): void {
 export function ReauthComplete() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const token = searchParams.get("token");
+  // Token arrives in the URL fragment (never sent to the server / logs); challenge is a
+  // non-bearer handshake nonce and stays a query param.
+  const [token] = useState(() => consumeTokenFromHash());
   const challenge = searchParams.get("challenge");
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);

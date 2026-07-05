@@ -6,6 +6,63 @@ strict rules are applied at every boundary.
 import ipaddress
 import re
 
+# Nebula group/tag name. Becomes a nebula-cert -groups argument and a firewall rule key, so
+# keep it to a safe label charset (no commas, whitespace, or shell/OS-significant characters).
+_GROUP_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+
+
+def validate_group(name: str) -> str:
+    """Return the stripped group name if valid, else raise ValueError."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Group name must not be empty")
+    if len(name) > 63 or not _GROUP_RE.match(name):
+        raise ValueError(
+            "Group name may contain only letters, digits, '.', '-' and '_', "
+            "must start with a letter or digit, and be at most 63 characters"
+        )
+    return name
+
+
+def validate_endpoint(endpoint: str) -> str:
+    """
+    Validate a public endpoint (host:port for Nebula static_host_map). Accepts host:port where
+    host is a hostname or IPv4 and port is 1-65535. Rejects whitespace and shell/OS-significant
+    characters so a bad value cannot break peer configs. Returns the stripped value.
+    """
+    endpoint = (endpoint or "").strip()
+    if not endpoint:
+        raise ValueError("Endpoint must not be empty")
+    if len(endpoint) > 261 or any(c.isspace() for c in endpoint):
+        raise ValueError("Invalid endpoint")
+    host, sep, port = endpoint.rpartition(":")
+    if not sep or not host:
+        raise ValueError("Endpoint must be host:port")
+    if not port.isdigit() or not (1 <= int(port) <= 65535):
+        raise ValueError("Endpoint port must be 1-65535")
+    # host: IPv4 or hostname (single/multi-label). IPv6 (with brackets) is not supported here.
+    try:
+        ipaddress.ip_address(host)
+        return endpoint
+    except ValueError:
+        pass
+    if not _DOMAIN_RE.match(host):
+        raise ValueError("Endpoint host must be a hostname or IP address")
+    return endpoint
+
+
+def validate_subnet_cidr(cidr: str) -> str:
+    """Return the normalized network CIDR (e.g. 10.100.0.0/24) if valid, else raise ValueError."""
+    cidr = (cidr or "").strip()
+    if not cidr:
+        raise ValueError("Subnet CIDR must not be empty")
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as e:
+        raise ValueError(f"Invalid subnet CIDR: {e}")
+    return str(net)
+
+
 # Single/multi-label hostname used as a node name. Becomes a cert CN, a nebula-cert -name
 # argument, and part of on-disk cert filenames, so it must never contain path separators,
 # "..", whitespace, or shell/OS-significant characters. Must start AND end with an

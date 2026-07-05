@@ -5,10 +5,12 @@ Security: Uses subprocess with shell=False and validated arguments.
 Command path is resolved at runtime but not user-controllable.
 """
 import ipaddress
+import json
 import logging
 import re
 import shutil
 import subprocess  # nosec B404 - used with shell=False and validated args
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -213,3 +215,33 @@ def cert_sign(
         args.extend(["-in-pub", str(in_pub)])
     run_nebula_cert(args)
     logger.info("Signed certificate for %s at %s", name, out_crt)
+
+
+def cert_fingerprint_from_pem(cert_pem: str) -> Optional[str]:
+    """
+    Return the Nebula certificate fingerprint (the value used in pki.blocklist) for a cert
+    PEM, via `nebula-cert print -json`. The cert is written to a private temp file because
+    stored cert files are encrypted at rest (so they cannot be fingerprinted in place).
+
+    Returns None on any failure so certificate issuance is never blocked by fingerprinting —
+    the caller should log/alert, since a missing fingerprint means that cert cannot later be
+    added to a revocation blocklist.
+    """
+    if not cert_pem or not cert_pem.strip():
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            crt = Path(tmpdir) / "cert.crt"
+            crt.write_text(cert_pem)
+            proc = run_nebula_cert([
+                "print", "-path", str(crt), "-json",
+            ])
+            data = json.loads(proc.stdout)
+    except Exception as e:  # subprocess failure, bad JSON, etc.
+        logger.error("Could not compute cert fingerprint: %s", e)
+        return None
+    fp = data.get("fingerprint") if isinstance(data, dict) else None
+    if not fp:
+        logger.error("nebula-cert print returned no fingerprint")
+        return None
+    return fp

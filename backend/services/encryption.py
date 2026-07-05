@@ -3,6 +3,8 @@ Encryption at rest: Fernet (symmetric, authenticated) with a version magic prefi
 Used for sensitive DB columns and cert store files. Key is required at startup.
 """
 import base64
+import hashlib
+import hmac
 import logging
 from typing import Optional
 
@@ -78,6 +80,21 @@ def _looks_like_encrypted(value: str) -> bool:
         return raw.startswith(MAGIC)
     except Exception:
         return False
+
+
+def deterministic_hash(value: str) -> str:
+    """
+    HMAC-SHA256 hex digest of value, keyed by the encryption key. Deterministic, so it can be
+    stored in a DB column and looked up by exact value — used for secrets that must be
+    searchable but never stored in plaintext (enrollment codes, invitation tokens). Keyed
+    (not a bare SHA-256) so an attacker with DB read access cannot brute-force short/low-entropy
+    values without also holding the encryption key.
+    """
+    key = getattr(settings, "_encryption_key", None)
+    if not key:
+        raise RuntimeError("Encryption key not loaded; cannot compute deterministic hash.")
+    key_bytes = key.encode() if isinstance(key, str) else key
+    return hmac.new(key_bytes, (value or "").encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def decrypt_to_str_or_plain(value: str | None) -> str | None:

@@ -8,12 +8,19 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.oidc import require_user, UserInfo
-from ..auth.permissions import get_user_nodes, require_network_manage
+from ..auth.permissions import (
+    check_access_grant,
+    check_network_permission,
+    check_node_permission,
+    get_user_nodes,
+    require_network_manage,
+    resolve_db_user,
+)
 from ..config import settings
 from ..database import get_session
 from ..models import Certificate, EnrollmentCode, Network, NetworkConfig, Node, User
@@ -22,6 +29,7 @@ from ..services.cert_store import read_cert_store_file
 from ..services.config_generator import generate_config_for_node
 from ..services.ip_allocator import IPAllocator
 from ..services.cert_manager import CertManager
+from ..utils.validation import validate_group, validate_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +46,20 @@ class NodeUpdate(BaseModel):
     lighthouse_options: Optional[dict[str, Any]] = None
     logging_options: Optional[dict[str, Any]] = None
     punchy_options: Optional[dict[str, Any]] = None
+
+    @field_validator("group")
+    @classmethod
+    def _validate_group(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v.strip() == "":
+            return v
+        return validate_group(v)
+
+    @field_validator("public_endpoint")
+    @classmethod
+    def _validate_public_endpoint(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v.strip() == "":
+            return v
+        return validate_endpoint(v)
 
 
 class NodeResponse(BaseModel):
@@ -91,6 +113,36 @@ async def _ensure_user_can_manage_node(
     await require_network_manage(user, node.network_id, session)
 
 
+async def _ensure_user_can_download_node_secrets(
+    user: UserInfo,
+    session: AsyncSession,
+    node: Node,
+    node_permission: str,
+) -> None:
+    """
+    Authorize download of private-key-bearing material (node config / certs bundle include
+    host.key). First hide non-visible nodes (404). Then require EITHER manage_nodes on the
+    network (owner/manager, or system-admin with an access grant) OR an explicit node-level
+    download grant. A bare view-only member must NOT be able to exfiltrate a node's private
+    key (audit HIGH: key download was gated on view/membership only).
+    node_permission: "download_config" or "download_cert".
+    """
+    await _ensure_user_can_access_node(user, session, node)
+    db_user = await resolve_db_user(user, session)
+    if await check_network_permission(db_user.id, node.network_id, "manage_nodes", session):
+        return
+    if user.system_role == "system-admin" and await check_access_grant(
+        db_user.id, "network", node.network_id, session
+    ):
+        return
+    if await check_node_permission(db_user.id, node.id, node_permission, session):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to download this node's private key/config",
+    )
+
+
 @router.get("", response_model=list[NodeResponse])
 async def list_nodes(
     network_id: Optional[int] = Query(None),
@@ -140,7 +192,7 @@ async def get_node_config(
     node = result.scalar_one_or_none()
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
-    await _ensure_user_can_access_node(user, session, node)
+    await _ensure_user_can_download_node_secrets(user, session, node, "download_config")
     if not node.ip_address:
         raise HTTPException(
             status_code=404,
@@ -198,7 +250,7 @@ async def get_node_certs(
     node = result.scalar_one_or_none()
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
-    await _ensure_user_can_access_node(user, session, node)
+    await _ensure_user_can_download_node_secrets(user, session, node, "download_cert")
     if not node.ip_address:
         raise HTTPException(
             status_code=404,
@@ -503,6 +555,9 @@ async def revoke_node_certificate(
     node.public_key = None
     node.cert_fingerprint = None
     node.status = "revoked"
+    # Invalidate the node's device token so a revoked node can no longer poll the control
+    # plane for config/certs (the cert itself is cut off from the mesh via pki.blocklist).
+    node.device_token_version = (node.device_token_version or 1) + 1
     await session.flush()
     user_result = await session.execute(select(User).where(User.oidc_sub == user.sub))
     db_user = user_result.scalar_one_or_none()
