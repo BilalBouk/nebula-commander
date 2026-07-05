@@ -84,14 +84,24 @@ def _endpoint_port(public_endpoint: Optional[str]) -> Optional[int]:
         return None
 
 
+# Client nodes get a stable, per-node port in this range (base + node id modulo range).
+# Stable (vs port 0 = new random port every restart) so the NAT mapping stays consistent
+# across sessions, which makes hole-punching beat the relay-fallback race reliably;
+# per-node (vs one fixed port) so multiple Nebula instances — including other meshes —
+# can coexist on one host without colliding.
+CLIENT_PORT_BASE = 42000
+CLIENT_PORT_RANGE = 2000
+
+
 def _listen_section(node: Node) -> dict[str, Any]:
     """Listen config. A node that others must reach on a fixed port — a lighthouse, a
     relay, or any node with a public_endpoint (e.g. a port-forwarded server) — listens on
-    that port (from its public_endpoint, else 4242). Ordinary roaming client nodes use
-    port 0 (a random ephemeral port) so multiple Nebula instances — including other meshes
-    — can coexist on one host without colliding on UDP 4242."""
+    that port (from its public_endpoint, else 4242). Ordinary client nodes get a stable
+    per-node port derived from their id."""
     if node.is_lighthouse or node.is_relay or node.public_endpoint:
         return _default_listen(_endpoint_port(node.public_endpoint) or DEFAULT_LISTEN_PORT)
+    if node.id:
+        return _default_listen(CLIENT_PORT_BASE + (node.id % CLIENT_PORT_RANGE))
     return _default_listen(0)
 
 
