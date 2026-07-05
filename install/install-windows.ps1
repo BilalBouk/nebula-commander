@@ -45,7 +45,8 @@ if (-not (Test-Path $Ncclient)) {
 }
 
 Write-Host "==> Enrolling this machine (machine scope)"
-& $Ncclient enroll --machine --server $Server --code $Code
+# --server is a global flag and must precede the 'enroll' subcommand.
+& $Ncclient --server $Server enroll --machine --code $Code
 if ($LASTEXITCODE -ne 0) { Write-Error "Enrollment failed."; exit 1 }
 
 Write-Host "==> Starting the ncclient service"
