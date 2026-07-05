@@ -96,7 +96,7 @@ def _listen_section(node: Node) -> dict[str, Any]:
 
 def _default_tun() -> dict[str, Any]:
     return {
-        "dev": "nebula1",
+        "dev": "atommesh",
         "drop_local_broadcast": False,
         "drop_multicast": False,
         "tx_queue": 500,
