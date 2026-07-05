@@ -70,6 +70,30 @@ def _default_listen(port: int = DEFAULT_LISTEN_PORT) -> dict[str, Any]:
     return {"host": "0.0.0.0", "port": port}  # nosec B104 - Nebula node config needs all interfaces
 
 
+def _endpoint_port(public_endpoint: Optional[str]) -> Optional[int]:
+    """Extract the UDP port from a node's public_endpoint (host:port), or None."""
+    if not public_endpoint:
+        return None
+    hostport = _normalize_endpoint(public_endpoint)
+    # Take the port after the last colon (validate_endpoint guarantees host:port).
+    _, _, tail = hostport.rpartition(":")
+    try:
+        p = int(tail)
+        return p if 1 <= p <= 65535 else None
+    except ValueError:
+        return None
+
+
+def _listen_section(node: Node) -> dict[str, Any]:
+    """Listen config. Lighthouses/relays must be reachable on a fixed port (from their
+    public_endpoint, else 4242). Ordinary client nodes use port 0 (a random ephemeral
+    port) so multiple Nebula instances — including other meshes — can coexist on one host
+    without colliding on UDP 4242."""
+    if node.is_lighthouse or node.is_relay:
+        return _default_listen(_endpoint_port(node.public_endpoint) or DEFAULT_LISTEN_PORT)
+    return _default_listen(0)
+
+
 def _default_tun() -> dict[str, Any]:
     return {
         "dev": "nebula1",
@@ -275,7 +299,7 @@ def build_config(
         "static_host_map": _default_static_host_map(hosts_with_endpoint) if hosts_with_endpoint else {},
         "lighthouse": _lighthouse_section(node, other_lighthouse_ips),
         "relay": _relay_section(node, other_relay_ips),
-        "listen": _default_listen(),
+        "listen": _listen_section(node),
         "punchy": _punchy_section(node),
         "tun": _default_tun(),
         "logging": _logging_section(node),
