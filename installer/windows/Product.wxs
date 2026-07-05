@@ -19,7 +19,19 @@
     <Icon Id="NcclientExe" SourceFile="redist\ncclient.exe" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLDIR" Name="Nebula Commander" />
+      <Directory Id="INSTALLDIR" Name="Nebula Commander">
+        <!-- Nebula loads wintun.dll from dist\windows\wintun\bin\amd64\ relative to
+             nebula.exe. Ship the DLL there or no TUN adapter can be created. -->
+        <Directory Id="DistDir" Name="dist">
+          <Directory Id="DistWindows" Name="windows">
+            <Directory Id="DistWintun" Name="wintun">
+              <Directory Id="DistWintunBin" Name="bin">
+                <Directory Id="DistWintunAmd64" Name="amd64" />
+              </Directory>
+            </Directory>
+          </Directory>
+        </Directory>
+      </Directory>
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
@@ -28,6 +40,7 @@
 
     <Feature Id="MainFeature" Title="Nebula Commander" Level="1" ConfigurableDirectory="INSTALLDIR">
       <ComponentGroupRef Id="MainComponents" />
+      <ComponentGroupRef Id="WintunComponents" />
     </Feature>
 
     <Feature Id="AddToPath"
@@ -99,6 +112,12 @@
                         Stop="both"
                         Remove="uninstall"
                         Wait="no" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="WintunComponents" Directory="DistWintunAmd64">
+      <Component Id="WintunDll" Guid="A6C4D3E2-7F8B-4A9C-8D1E-5F6A7B8C9D0E">
+        <File Id="WintunDll" Source="redist\wintun.dll" KeyPath="yes" />
       </Component>
     </ComponentGroup>
 

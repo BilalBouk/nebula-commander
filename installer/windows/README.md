@@ -36,6 +36,7 @@ No re-login, no scheduled tasks, survives reboots.
   - `redist/ncclient.exe` (from `client/binaries/dist/` after PyInstaller build)
   - `redist/ncclient-tray.exe` (from `client/windows/dist/` after tray build)
   - `redist/nebula.exe` (from the official [Nebula release](https://github.com/slackhq/nebula/releases) `nebula-windows-amd64.zip` — verify the SHA256 against the release `SHASUM256.txt`)
+  - `redist/wintun.dll` (from the same Nebula zip: `dist\windows\wintun\bin\amd64\wintun.dll`; installed next to nebula.exe so the TUN adapter can be created — Nebula fails to start without it)
   - `redist/ncclient-service.exe` ([WinSW](https://github.com/winsw/winsw/releases) `WinSW-x64.exe`, renamed)
 
 ## Building locally

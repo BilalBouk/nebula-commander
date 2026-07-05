@@ -221,6 +221,9 @@ jobs:
           if ($hash -ne $env:NEBULA_ZIP_SHA256) { Write-Error "nebula zip SHA256 mismatch: $hash"; exit 1 }
           Expand-Archive nebula-windows-amd64.zip -DestinationPath nebula-extract
           Copy-Item nebula-extract\nebula.exe installer\windows\redist\nebula.exe
+          # Nebula loads this at runtime from dist\windows\wintun\bin\amd64 next to nebula.exe;
+          # the MSI installs it there. Without it no TUN adapter can be created on Windows.
+          Copy-Item nebula-extract\dist\windows\wintun\bin\amd64\wintun.dll installer\windows\redist\wintun.dll
 
       - name: Download WinSW (pinned, checksum-verified)
         run: |
