@@ -152,7 +152,8 @@ export function ClientDownload() {
           <Card className="mt-4">
             <h2 className="text-xl font-bold mb-4">Downloads</h2>
             <p className="text-gray-600 dark:text-gray-400 mb-4 text-sm">
-              CLI binary, optional tray app, or single MSI installer.
+              For unattended machines use the MSI installer (installs a background
+              service, runs with no one logged in). CLI and tray app are also available.
             </p>
             <div className="space-y-4 mb-6">
               <div>
@@ -183,11 +184,20 @@ export function ClientDownload() {
                   </a>
                 ))}
                 <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
-                  Or use the <a href="/downloads/NebulaCommander-windows-amd64.msi" className="text-purple-600 dark:text-purple-400 hover:underline">MSI installer</a> to install both ncclient and the tray app and add them to PATH.
+                  For a hands-off install on many machines, use the <a href="/downloads/NebulaCommander-windows-amd64.msi" className="text-purple-600 dark:text-purple-400 hover:underline">MSI installer</a> below instead.
                 </p>
               </div>
               <div>
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">MSI installer (CLI + Tray)</p>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">MSI installer (background service — recommended)</p>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                  Installs ncclient, the tray app and the bundled Nebula binary, and registers
+                  a Windows service that runs at boot with no user logged in. After installing,
+                  enroll the machine once from an <strong>elevated</strong> prompt; the running
+                  service picks it up automatically:
+                </p>
+                <pre className="p-3 bg-gray-100 dark:bg-gray-800 rounded text-xs overflow-x-auto mb-2">
+{`ncclient enroll --machine --server ${window.location.origin} --code XXXXXXXX`}
+                </pre>
                 <a
                   href="/downloads/NebulaCommander-windows-amd64.msi"
                   download="NebulaCommander-windows-amd64.msi"

@@ -1,0 +1,7 @@
+# Client binaries are large and are NOT committed. Stage them here before
+# `docker compose build` so they get baked into the frontend image and served
+# from the UI at /downloads/. Keep the marker + docs files tracked.
+*
+!.gitignore
+!.gitkeep
+!README.md

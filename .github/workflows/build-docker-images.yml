@@ -143,6 +143,7 @@ jobs:
           build-args: |
             VERSION=${{ needs.get-version.outputs.version }}
             DOWNLOAD_BINARIES=1
+            GITHUB_REPO=${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
