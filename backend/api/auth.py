@@ -137,6 +137,7 @@ async def dev_token(
         "system_role": "system-admin",
         "exp": expires,
         "iss": settings.local_jwt_issuer,
+        "typ": "session",
     }
     token = jwt.encode(
         payload,
@@ -261,6 +262,7 @@ async def callback(request: Request, session: AsyncSession = Depends(get_session
             "system_role": system_role,
             "exp": expires,
             "iss": settings.local_jwt_issuer,
+            "typ": "session",  # Token-type marker; decode_token accepts ONLY typ=session as a user session
         }
 
         our_token = jwt.encode(

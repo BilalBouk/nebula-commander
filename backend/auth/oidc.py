@@ -107,12 +107,19 @@ def decode_token(token: str) -> Optional[dict]:
         
         # Validate using local JWT secret; require our issuer claim so a forged token
         # cannot masquerade as an OIDC identity or a different token type.
-        return jwt.decode(
+        payload = jwt.decode(
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
             issuer=settings.local_jwt_issuer,
         )
+        # Only user-session tokens are valid here. Device tokens (sub=device) and reauth
+        # tokens (reauth=True) are signed with the same secret+issuer but MUST NOT be
+        # accepted as a user session — they have their own decoders. Without this check a
+        # device/reauth token replays as a full authenticated user (security audit).
+        if payload.get("typ") != "session":
+            return None
+        return payload
     except JWTError:
         return None
 

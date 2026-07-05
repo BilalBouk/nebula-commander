@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.oidc import require_user, require_device_token, UserInfo
-from ..auth.permissions import check_network_permission
+from ..auth.permissions import check_network_permission, get_user_networks
 from ..database import get_session
 from ..utils.validation import validate_domain, is_valid_dns_server, sanitize_dns_label
 from ..models import (
@@ -119,6 +119,14 @@ async def get_dns_config(
     network = result.scalar_one_or_none()
     if not network:
         raise HTTPException(status_code=404, detail="Network not found")
+
+    # AuthZ: only members of the network (or system admins) may read its DNS config.
+    # Previously any authenticated user could read any network's domain/upstreams and even
+    # cause a config row to be created cross-tenant (audit).
+    if user.system_role != "system-admin":
+        allowed = await get_user_networks(user, session)
+        if network_id not in allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a member of this network")
 
     cfg_result = await session.execute(
         select(NetworkDNSConfig).where(NetworkDNSConfig.network_id == network_id)
