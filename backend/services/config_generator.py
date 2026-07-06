@@ -51,50 +51,14 @@ def _relay_section(node: Node, other_relay_ips: list[str]) -> dict[str, Any]:
     return {"am_relay": False, "use_relays": True, "relays": other_relay_ips}
 
 
-# Interface-name patterns for OTHER overlay VPNs (and our own tun). Nebula discovers a
-# host's local IPs and advertises them to the lighthouse as underlay candidates; if a node
-# also runs Shieldoo/Defined/Tailscale/etc., their overlay IPs get advertised, and peers
-# then try to run Nebula-over-that-VPN. That half-completes handshakes and thrashes. Exclude
-# those interfaces (and our own atommesh) from the advertised local IP list.
-_OVERLAY_IFACE_PATTERNS = [
-    "atommesh",        # our own tun (belt-and-suspenders; Nebula usually excludes it)
-    "nebula[0-9]*",    # legacy tun name
-    "shd[0-9]*",       # Shieldoo
-    "defined[0-9]*",   # Defined Networking
-    "tailscale[0-9]*", "ts[0-9]*",  # Tailscale
-    "wg[0-9]*",        # WireGuard
-    "zt[a-z0-9]*",     # ZeroTier
-]
-
-# CGNAT range (100.64.0.0/10) — covers Shieldoo's 100.127.x and our own 100.100.x overlay.
-# Never a valid public underlay, so never advertise it locally or dial it remotely.
-_CGNAT_RANGE = "100.64.0.0/10"
-
-
-def _allow_lists() -> dict[str, Any]:
-    """local_allow_list / remote_allow_list that keep Nebula on the real underlay (public
-    IPs + real LANs) instead of tunnelling itself over another overlay VPN on the host."""
-    return {
-        "local_allow_list": {
-            "interfaces": {pat: False for pat in _OVERLAY_IFACE_PATTERNS},
-            _CGNAT_RANGE: False,
-        },
-        "remote_allow_list": {
-            _CGNAT_RANGE: False,
-        },
-    }
-
-
 def _lighthouse_section(
     node: Node,
     other_lighthouse_ips: list[str],
 ) -> dict[str, Any]:
-    """Build lighthouse section: am_lighthouse, hosts, optional interval, and allow-lists
-    that exclude other overlay VPNs from underlay discovery. DNS is via ncclient dnsmasq only."""
+    """Build lighthouse section: am_lighthouse, hosts, optional interval. DNS is served by ncclient dnsmasq only."""
     section: dict[str, Any] = {
         "am_lighthouse": node.is_lighthouse,
         "hosts": other_lighthouse_ips,
-        **_allow_lists(),
     }
     opts = node.lighthouse_options or {}
     if node.is_lighthouse and opts.get("interval_seconds") is not None:
