@@ -93,16 +93,25 @@ CLIENT_PORT_BASE = 42000
 CLIENT_PORT_RANGE = 2000
 
 
+def _client_listen(port: int) -> dict[str, Any]:
+    # Dual-stack ([::]) rather than 0.0.0.0 so that on mobile/CGNAT networks (464XLAT/CLAT,
+    # where the radio bearer is IPv6-primary and IPv4 to a v4-only host is synthesized), the
+    # handshake egresses as a v4-mapped address over the working IPv6/CLAT path. An IPv4-only
+    # 0.0.0.0 socket gets 100% loss on such 4G links; a dual-stack socket still reaches a
+    # v4-only lighthouse (v4-mapped) and works on wired IPv4 too. Matches Defined Networking.
+    return {"host": "[::]", "port": port}  # nosec B104 - Nebula node config needs all interfaces
+
+
 def _listen_section(node: Node) -> dict[str, Any]:
-    """Listen config. A node that others must reach on a fixed port — a lighthouse, a
-    relay, or any node with a public_endpoint (e.g. a port-forwarded server) — listens on
-    that port (from its public_endpoint, else 4242). Ordinary client nodes get a stable
-    per-node port derived from their id."""
+    """Listen config. A node that others must reach on a fixed port — a lighthouse, a relay,
+    or any node with a public_endpoint (e.g. a port-forwarded server) — listens on that port
+    (from its public_endpoint, else 4242) on 0.0.0.0. Ordinary client nodes get a stable
+    per-node port and a dual-stack [::] bind so they work over mobile/CGNAT (4G) links."""
     if node.is_lighthouse or node.is_relay or node.public_endpoint:
         return _default_listen(_endpoint_port(node.public_endpoint) or DEFAULT_LISTEN_PORT)
     if node.id:
-        return _default_listen(CLIENT_PORT_BASE + (node.id % CLIENT_PORT_RANGE))
-    return _default_listen(0)
+        return _client_listen(CLIENT_PORT_BASE + (node.id % CLIENT_PORT_RANGE))
+    return _client_listen(0)
 
 
 def _default_tun() -> dict[str, Any]:
